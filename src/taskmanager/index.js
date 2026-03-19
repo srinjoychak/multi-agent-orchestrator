@@ -1,5 +1,5 @@
-import { readFile, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { readFile, writeFile, unlink } from 'node:fs/promises';
+import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { createTask, isValidTransition } from '../types/index.js';
 
@@ -157,6 +157,41 @@ export class TaskManager {
   }
 
   /**
+   * Get all tasks assigned to a specific agent.
+   * @param {string} agentName
+   * @returns {Promise<import('../types/index.js').Task[]>}
+   */
+  async getTasksByAgent(agentName) {
+    const tasks = await this.getTasks();
+    return tasks.filter((t) => t.assigned_to === agentName);
+  }
+
+  /**
+   * Reset stale claimed tasks (claimed_at > 10 min ago) back to pending.
+   * @returns {Promise<string[]>} - IDs of reset tasks
+   */
+  async resetStaleClaims() {
+    return this._withLock(async (tasks) => {
+      const STALE_MS = 10 * 60 * 1000; // 10 minutes
+      const now = Date.now();
+      const reset = [];
+      for (const task of tasks) {
+        if (
+          task.status === 'claimed' &&
+          task.claimed_at &&
+          now - new Date(task.claimed_at).getTime() > STALE_MS
+        ) {
+          task.status = 'pending';
+          task.assigned_to = null;
+          task.claimed_at = null;
+          reset.push(task.id);
+        }
+      }
+      return reset;
+    });
+  }
+
+  /**
    * Get task completion summary.
    * @returns {Promise<{total: number, pending: number, in_progress: number, done: number, failed: number}>}
    */
@@ -214,13 +249,9 @@ export class TaskManager {
         // Check if locked
         if (existsSync(this._lockFile)) {
           // Check lock age — stale locks older than 30s are broken
-          const { mtimeMs } = await import('node:fs').then((fs) =>
-            fs.statSync(this._lockFile),
-          );
+          const { mtimeMs } = statSync(this._lockFile);
           if (Date.now() - mtimeMs > 30_000) {
-            await import('node:fs/promises').then((fs) =>
-              fs.unlink(this._lockFile),
-            );
+            await unlink(this._lockFile);
           } else {
             await new Promise((r) => setTimeout(r, retryDelay));
             continue;
@@ -243,8 +274,7 @@ export class TaskManager {
 
         // Release lock
         if (existsSync(this._lockFile)) {
-          const { unlink: unlinkFile } = await import('node:fs/promises');
-          await unlinkFile(this._lockFile);
+          await unlink(this._lockFile);
         }
 
         return result;
@@ -252,8 +282,7 @@ export class TaskManager {
         // Release lock on error
         try {
           if (existsSync(this._lockFile)) {
-            const { unlink: unlinkFile } = await import('node:fs/promises');
-            await unlinkFile(this._lockFile);
+            await unlink(this._lockFile);
           }
         } catch { /* ignore cleanup errors */ }
         throw error;
