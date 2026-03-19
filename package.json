@@ -1,0 +1,24 @@
+{
+  "name": "multi-agent-orchestrator",
+  "version": "0.1.0",
+  "description": "Orchestrates multiple AI coding CLI agents (Claude Code, Gemini CLI) working as a team",
+  "type": "module",
+  "main": "src/orchestrator/index.js",
+  "bin": {
+    "orchestrate": "./src/orchestrator/index.js"
+  },
+  "scripts": {
+    "start": "node src/orchestrator/index.js",
+    "test": "node --test src/**/*.test.js",
+    "check-agents": "node src/adapters/check.js"
+  },
+  "keywords": [
+    "ai-agents",
+    "multi-agent",
+    "orchestrator",
+    "claude-code",
+    "gemini-cli",
+    "agent-teams"
+  ],
+  "license": "MIT"
+}
