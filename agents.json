@@ -1,12 +1,12 @@
 {
   "claude-code": {
-    "role": "developer",
-    "capabilities": ["code", "refactor", "test", "debug"],
+    "role": "tech-lead-reviewer",
+    "capabilities": ["review"],
     "weight": 1
   },
   "gemini": {
     "role": "developer",
-    "capabilities": ["research", "docs", "analysis", "code", "test"],
+    "capabilities": ["code", "refactor", "test", "debug", "docs", "research", "analysis"],
     "weight": 1
   }
 }

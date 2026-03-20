@@ -20,7 +20,7 @@
  *   node src/orchestrator/index.js --tasks tasks.json
  */
 
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Orchestrator } from './core.js';
 import { stepDecompose } from './steps/decompose.js';
@@ -29,14 +29,30 @@ import { stepExecute } from './steps/execute.js';
 import { stepStatus } from './steps/status.js';
 import { stepMerge } from './steps/merge.js';
 import { loadSession, recordReview, patchSession } from './session.js';
+import { TaskManager } from '../taskmanager/index.js';
+
+/**
+ * Swappable handler map — allows tests to mock individual verbs via mock.method().
+ * @type {{ stepDecompose, stepAssign, stepExecute, stepStatus, stepMerge, recordReview, patchSession }}
+ */
+export const _handlers = {
+  stepDecompose,
+  stepAssign,
+  stepExecute,
+  stepStatus,
+  stepMerge,
+  recordReview,
+  patchSession,
+};
 
 // Re-export Orchestrator so existing imports of this module still work
 export { Orchestrator } from './core.js';
 
-const args = process.argv.slice(2);
 const projectRoot = resolve(process.cwd());
 
 async function main() {
+  // Read args fresh each call so tests can set process.argv before calling main()
+  const args = process.argv.slice(2);
   const verb = args[0];
 
   // ── Global flags ──────────────────────────────────────────────────────────
@@ -44,6 +60,7 @@ async function main() {
   if (args.includes('--version') || args.includes('-v')) {
     console.log('multi-agent-orchestrator v0.2.0');
     process.exit(0);
+    return;
   }
 
   if (args.includes('--check-agents')) {
@@ -54,6 +71,7 @@ async function main() {
   if (!verb || args.includes('--help') || args.includes('-h')) {
     printHelp();
     process.exit(0);
+    return;
   }
 
   // ── Step verbs ────────────────────────────────────────────────────────────
@@ -63,24 +81,24 @@ async function main() {
     case 'decompose': {
       // decompose "user prompt here"
       const prompt = args.slice(1).join(' ');
-      await stepDecompose(projectRoot, prompt);
+      await _handlers.stepDecompose(projectRoot, prompt);
       break;
     }
 
     case 'assign': {
-      await stepAssign(projectRoot);
+      await _handlers.stepAssign(projectRoot);
       break;
     }
 
     case 'execute': {
       // execute [taskId]
       const taskId = args[1] && !args[1].startsWith('-') ? args[1] : undefined;
-      await stepExecute(projectRoot, taskId);
+      await _handlers.stepExecute(projectRoot, taskId);
       break;
     }
 
     case 'status': {
-      await stepStatus(projectRoot);
+      await _handlers.stepStatus(projectRoot);
       break;
     }
 
@@ -89,11 +107,11 @@ async function main() {
       const taskId = args[1];
       if (!taskId) throw new Error('accept requires a task ID. Usage: accept T1');
       const orchestrator = new Orchestrator(projectRoot);
-      const session = await recordReview(orchestrator.agentTeamDir, taskId, 'accepted');
+      const session = await _handlers.recordReview(orchestrator.agentTeamDir, taskId, 'accepted');
       console.log(`✓ ${taskId} accepted.`);
       // Advance phase to 'reviewing' if still on an earlier phase
       if (!['reviewing', 'merged', 'complete'].includes(session.phase)) {
-        await patchSession(orchestrator.agentTeamDir, { phase: 'reviewing' });
+        await _handlers.patchSession(orchestrator.agentTeamDir, { phase: 'reviewing' });
       }
       break;
     }
@@ -103,17 +121,34 @@ async function main() {
       const taskId = args[1];
       const reason = args.slice(2).join(' ');
       if (!taskId) throw new Error('reject requires a task ID. Usage: reject T2 "reason"');
-      const orchestrator = new Orchestrator(projectRoot);
-      await recordReview(orchestrator.agentTeamDir, taskId, 'rejected', reason);
-      console.log(`✗ ${taskId} rejected${reason ? `: ${reason}` : ''}.`);
-      console.log(`  To re-queue: update the task description and run execute ${taskId}`);
+      const agentTeamDir = join(projectRoot, '.agent-team');
+      await _handlers.recordReview(agentTeamDir, taskId, 'rejected', reason);
+      // Re-queue the task: append rejection feedback and reset to pending
+      const taskManager = new TaskManager(agentTeamDir);
+      await taskManager.initialize();
+      const task = await taskManager.getTask(taskId);
+      if (task) {
+        const updatedDescription =
+          task.description + (reason ? `\n\n[Rejected: ${reason}]` : '\n\n[Rejected]');
+        await taskManager.updateStatus(taskId, 'pending', {
+          description: updatedDescription,
+          assigned_to: null,
+          claimed_at: null,
+          completed_at: null,
+        });
+        console.log(`✗ ${taskId} rejected${reason ? `: ${reason}` : ''}.`);
+        console.log(`  Task re-queued as pending with rejection feedback.`);
+        console.log(`  Run: execute ${taskId}`);
+      } else {
+        console.log(`✗ ${taskId} rejected (task not found in task list).`);
+      }
       break;
     }
 
     case 'merge': {
       // merge [taskId]
       const taskId = args[1] && !args[1].startsWith('-') ? args[1] : undefined;
-      await stepMerge(projectRoot, taskId);
+      await _handlers.stepMerge(projectRoot, taskId);
       break;
     }
 
@@ -188,6 +223,8 @@ OTHER:
   --help                   Show this help
   `);
 }
+
+export { main };
 
 // Only execute when run directly (node index.js ...), not when imported as a module
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

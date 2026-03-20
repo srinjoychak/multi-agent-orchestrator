@@ -97,8 +97,8 @@ describe('isValidTransition()', () => {
     assert.equal(isValidTransition('pending', 'in_progress'), false);
   });
 
-  it('returns false for done → pending (reopen)', () => {
-    assert.equal(isValidTransition('done', 'pending'), false);
+  it('returns true for done → pending (reject re-queue)', () => {
+    assert.equal(isValidTransition('done', 'pending'), true);
   });
 
   it('returns false for done → claimed', () => {
@@ -109,8 +109,8 @@ describe('isValidTransition()', () => {
     assert.equal(isValidTransition('done', 'in_progress'), false);
   });
 
-  it('returns false for in_progress → pending', () => {
-    assert.equal(isValidTransition('in_progress', 'pending'), false);
+  it('returns true for in_progress → pending (reject re-queue)', () => {
+    assert.equal(isValidTransition('in_progress', 'pending'), true);
   });
 
   it('returns false for unknown source status', () => {
@@ -130,8 +130,8 @@ describe('VALID_TRANSITIONS', () => {
     }
   });
 
-  it('done has no valid outgoing transitions (terminal)', () => {
-    assert.deepEqual(VALID_TRANSITIONS.done, []);
+  it('done can transition to pending (reject re-queue)', () => {
+    assert.deepEqual(VALID_TRANSITIONS.done, ['pending']);
   });
 
   it('pending only transitions to claimed', () => {

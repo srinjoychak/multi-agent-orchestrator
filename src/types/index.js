@@ -50,9 +50,9 @@
 export const VALID_TRANSITIONS = {
   pending: ['claimed'],
   claimed: ['in_progress', 'pending'],    // pending = unclaim
-  in_progress: ['done', 'failed'],
+  in_progress: ['done', 'failed', 'pending'], // pending = reject re-queue
   failed: ['pending'],                     // retry
-  done: [],                                // terminal
+  done: ['pending'],                       // pending = reject re-queue
 };
 
 // Agent names

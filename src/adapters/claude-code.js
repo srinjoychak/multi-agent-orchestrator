@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { AgentAdapter } from './base.js';
+import { platformExec } from '../../platform/detect.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -161,7 +162,8 @@ export class ClaudeCodeAdapter extends AgentAdapter {
    */
   async _getChangedFiles(workDir) {
     try {
-      const { stdout } = await execFileAsync(
+      const { stdout } = await platformExec(
+        execFileAsync,
         'git',
         ['diff', '--name-only', 'HEAD'],
         { cwd: workDir, timeout: 5_000 },

@@ -39,7 +39,7 @@ export class Orchestrator {
     this.agentTeamDir = join(this.projectRoot, '.agent-team');
     this.worktreesDir = join(this.projectRoot, '.worktrees');
     this.pollIntervalMs = options.pollIntervalMs ?? 2000;
-    this.taskTimeoutMs = options.taskTimeoutMs ?? 300_000;
+    this.taskTimeoutMs = options.taskTimeoutMs ?? 900_000; // 15 min — complex tasks need time
 
     this.taskManager = new TaskManager(this.agentTeamDir);
     this.comms = new FileCommChannel(this.agentTeamDir);
