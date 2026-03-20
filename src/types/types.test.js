@@ -21,7 +21,8 @@ describe('createTask()', () => {
     assert.equal(task.result_ref, null);
     assert.equal(task.worktree_branch, null);
     assert.equal(task.retries, 0);
-    assert.equal(task.max_retries, 1);
+    assert.equal(task.max_retries, 3);
+    assert.deepEqual(task.previous_agents, []);
   });
 
   it('merges overrides correctly', () => {
@@ -53,9 +54,9 @@ describe('createTask()', () => {
     assert.equal(task.status, 'done');
   });
 
-  it('max_retries defaults to 1 when not provided', () => {
+  it('max_retries defaults to 3 when not provided', () => {
     const task = createTask({ id: 'T1' });
-    assert.equal(task.max_retries, 1);
+    assert.equal(task.max_retries, 3);
   });
 
   it('max_retries 0 is respected (falsy but valid)', () => {

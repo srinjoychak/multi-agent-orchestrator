@@ -92,7 +92,8 @@ export function createTask(overrides = {}) {
     result_ref: null,
     worktree_branch: null,
     retries: 0,
-    max_retries: overrides.max_retries ?? 1,
+    max_retries: overrides.max_retries ?? 3,
+    previous_agents: overrides.previous_agents || [],
     ...overrides,
   };
 }

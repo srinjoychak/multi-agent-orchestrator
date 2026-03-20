@@ -240,19 +240,44 @@ export class Orchestrator {
     let rrIndex = 0;
 
     for (const task of tasks) {
+      const previousAgents = task.previous_agents || [];
       let agentName = null;
+      let routingNote = '';
+
+      // 1. Prefer a capable agent not previously tried
       if (task.type) {
         for (const [name, adapter] of this.adapters) {
-          if (adapter.capabilities.includes(task.type)) {
+          if (adapter.capabilities.includes(task.type) && !previousAgents.includes(name)) {
             agentName = name;
+            routingNote = `[${task.type}]`;
             break;
           }
         }
       }
+
+      // 2. All capable agents exhausted — try any agent not previously tried (round-robin order)
+      if (!agentName) {
+        for (let i = 0; i < agentNames.length; i++) {
+          const name = agentNames[(rrIndex + i) % agentNames.length];
+          if (!previousAgents.includes(name)) {
+            agentName = name;
+            rrIndex++;
+            routingNote = task.type
+              ? `[${task.type}→fallback, all capable agents tried]`
+              : '[round-robin]';
+            break;
+          }
+        }
+      }
+
+      // 3. All agents tried — force round-robin (task may fail again, but don't get stuck)
       if (!agentName) {
         agentName = agentNames[rrIndex % agentNames.length];
         rrIndex++;
+        routingNote = `[${task.type || 'any'}→force, all agents previously tried]`;
       }
+
+      const isReassignment = previousAgents.length > 0;
 
       try {
         await this.taskManager.claimTask(task.id, agentName);
@@ -260,8 +285,15 @@ export class Orchestrator {
         await this.taskManager.updateStatus(task.id, 'in_progress', {
           worktree_branch: branchName,
         });
-        const routingNote = task.type ? `[${task.type}]` : '[round-robin]';
-        console.log(`  ${task.id}: "${task.title}" → ${agentName} ${routingNote}`);
+
+        if (isReassignment) {
+          console.log(
+            `  ${task.id}: reassigned ${previousAgents.at(-1)} → ${agentName} ` +
+            `(after ${task.retries} failure(s)) ${routingNote}`,
+          );
+        } else {
+          console.log(`  ${task.id}: "${task.title}" → ${agentName} ${routingNote}`);
+        }
       } catch (error) {
         console.error(`  Failed to assign ${task.id}: ${error.message}`);
       }
