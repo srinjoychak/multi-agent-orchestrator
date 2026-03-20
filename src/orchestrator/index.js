@@ -58,7 +58,7 @@ export class Orchestrator {
     console.log('Initializing orchestrator...');
 
     // Create directories
-    for (const dir of [this.agentTeamDir, this.worktreesDir]) {
+    for (const dir of [this.agentTeamDir, this.worktreesDir, this.merger.resultsDir]) {
       if (!existsSync(dir)) {
         await mkdir(dir, { recursive: true });
       }
@@ -147,8 +147,7 @@ export class Orchestrator {
   async loadTasksFromFile(filePath) {
     const absolutePath = resolve(filePath);
     if (!existsSync(absolutePath)) {
-      console.error(`Error: Tasks file not found: ${absolutePath}`);
-      process.exit(1);
+      throw new Error(`Tasks file not found: ${absolutePath}`);
     }
 
     try {
@@ -156,14 +155,16 @@ export class Orchestrator {
       const parsed = JSON.parse(content);
       const taskList = Array.isArray(parsed) ? parsed : (parsed.tasks || []);
 
-      if (!Array.isArray(taskList)) {
-        throw new Error('Tasks file must contain an array of tasks or an object with a "tasks" array.');
+      if (taskList.length === 0) {
+        throw new Error('Tasks file contains no tasks.');
       }
 
       return await this.taskManager.addTasks(taskList);
     } catch (error) {
-      console.error(`Error parsing tasks file: ${error.message}`);
-      process.exit(1);
+      if (error instanceof SyntaxError) {
+        throw new Error(`Invalid JSON in tasks file: ${error.message}`);
+      }
+      throw error;
     }
   }
 
@@ -246,6 +247,8 @@ export class Orchestrator {
    * Execute all tasks in dependency-aware parallel waves.
    */
   async executeTasks() {
+    const dispatched = new Set(); // track IDs already handed to _runTask
+
     while (true) {
       const allTasks = await this.taskManager.getTasks();
 
@@ -259,28 +262,33 @@ export class Orchestrator {
 
       // 3. Get ready tasks (pending and unblocked)
       const readyTasks = this._getReadyTasks(allTasks);
-      
+
       // 4. Handle tasks that are already in_progress (from initial assignTasks)
-      const inProgress = allTasks.filter((t) => t.status === 'in_progress');
-      
+      const inProgress = allTasks.filter(
+        (t) => t.status === 'in_progress' && !dispatched.has(t.id),
+      );
+
       const tasksToRun = [...inProgress];
-      
+
       // Assign and add ready tasks
       if (readyTasks.length > 0) {
         await this.assignTasks(readyTasks);
         // Refresh after assignment
         const refreshed = await this.taskManager.getTasks();
-        const newlyInProgress = refreshed.filter((t) => 
-          readyTasks.some(r => r.id === t.id) && t.status === 'in_progress'
+        const newlyInProgress = refreshed.filter(
+          (t) => readyTasks.some((r) => r.id === t.id) && !dispatched.has(t.id),
         );
         tasksToRun.push(...newlyInProgress);
       }
 
       if (tasksToRun.length > 0) {
         // Log current wave
-        const ids = tasksToRun.map(t => t.id).join(', ');
+        const ids = tasksToRun.map((t) => t.id).join(', ');
         console.log(`  Wave: starting tasks [${ids}]`);
-        
+
+        // Track dispatched tasks
+        tasksToRun.forEach((t) => dispatched.add(t.id));
+
         // Execute this wave in parallel
         const wave = tasksToRun.map((task) => this._runTask(task));
         await Promise.all(wave);
@@ -383,6 +391,7 @@ export class Orchestrator {
    */
   async monitorUntilComplete() {
     while (this._running) {
+      await this.taskManager.resetStaleClaims();
       const complete = await this.taskManager.isAllComplete();
       if (complete) break;
 
