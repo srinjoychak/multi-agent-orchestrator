@@ -1,0 +1,23 @@
+[
+  {
+    "id": "T1",
+    "title": "Create a simple utility module",
+    "description": "Create a file at test-run/output/utils.js that exports two functions: add(a, b) which returns a + b, and multiply(a, b) which returns a * b. Use ES module syntax (export). Add a JSDoc comment to each function.",
+    "type": "code",
+    "depends_on": []
+  },
+  {
+    "id": "T2",
+    "title": "Write tests for the utility module",
+    "description": "Create a file at test-run/output/utils.test.js that tests both add() and multiply() from utils.js using Node.js built-in node:test and node:assert. Import utils.js using ES module import. Test at least 3 cases per function.",
+    "type": "test",
+    "depends_on": ["T1"]
+  },
+  {
+    "id": "T3",
+    "title": "Document the utility module",
+    "description": "Create a file at test-run/output/UTILS_README.md documenting the utils.js module. Include: purpose, function signatures, usage examples, and any edge cases.",
+    "type": "docs",
+    "depends_on": ["T1"]
+  }
+]
