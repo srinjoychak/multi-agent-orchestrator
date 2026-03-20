@@ -3,45 +3,87 @@
  *
  * Usage: node src/orchestrator/index.js status
  *
- * ─────────────────────────────────────────────────────────────────
- * GEMINI IMPLEMENTATION TASK
- * ─────────────────────────────────────────────────────────────────
- * Implement stepStatus(projectRoot) in this file.
- *
- * Logic:
- *   1. Load session via loadSession(agentTeamDir) — if none, print "No active session"
- *   2. Load tasks from TaskManager
- *   3. Print a formatted status board:
- *
- *      Session: sess-abc123   Phase: executing
- *      Prompt:  "Build a REST API with auth and tests"
- *      ────────────────────────────────────────────────────
- *      T1  [code]      Add auth middleware      done      claude-code
- *      T2  [test]      Write auth tests         done      gemini
- *      T3  [refactor]  Protect routes           in_prog   claude-code
- *      ────────────────────────────────────────────────────
- *      Summary: 2 done, 1 in_progress, 0 pending, 0 failed
- *
- *   4. For each done task, show review decision from session.reviews if present:
- *        [accepted] or [rejected: reason]
- *   5. Print next available actions based on phase:
- *      - If tasks are done and not yet reviewed: "accept/reject <taskId>"
- *      - If all accepted: "merge <taskId>"
- *      - If all merged: "report"
- *   6. Does NOT need to initialize() the full orchestrator (no CLI probing needed)
- *      Just needs: new Orchestrator(root).taskManager + session loading
- *
- * Imports needed:
- *   import { join } from 'node:path';
- *   import { resolve } from 'node:path';
- *   import { TaskManager } from '../../taskmanager/index.js';
- *   import { loadSession } from '../session.js';
- *
- * Error handling:
- *   - If no session.json, print friendly message and exit 0 (not an error)
- * ─────────────────────────────────────────────────────────────────
+ * Shows the current session state board — no CLI probing needed, read-only.
  */
 
+import { join, resolve } from 'node:path';
+import { TaskManager } from '../../taskmanager/index.js';
+import { loadSession } from '../session.js';
+
+/**
+ * @param {string} projectRoot
+ * @returns {Promise<{session: Object, tasks: Object[], summary: Object}|null>}
+ */
 export async function stepStatus(projectRoot) {
-  throw new Error('stepStatus not yet implemented. See comments in this file for spec.');
+  const root = resolve(projectRoot);
+  const agentTeamDir = join(root, '.agent-team');
+
+  let session;
+  try {
+    session = await loadSession(agentTeamDir);
+  } catch {
+    console.log('No active session. Start with: decompose "your request"');
+    return null;
+  }
+
+  // Read task state directly — no need to probe CLIs
+  const taskManager = new TaskManager(agentTeamDir);
+  let tasks = [];
+  let summary = { done: 0, in_progress: 0, pending: 0, failed: 0 };
+  try {
+    await taskManager.initialize();
+    tasks = await taskManager.getTasks();
+    summary = await taskManager.getSummary();
+  } catch {
+    // tasks.json may not exist yet (decomposed but no assign yet)
+  }
+
+  // ── Status board ──────────────────────────────────────────────────────────
+  console.log('');
+  console.log(`Session : ${session.sessionId}   Phase: ${session.phase}`);
+  console.log(`Prompt  : "${session.prompt}"`);
+  console.log('─'.repeat(72));
+
+  for (const task of tasks) {
+    const review = session.reviews?.[task.id];
+    const reviewStr = review
+      ? review.decision === 'accepted'
+        ? ' ✓accepted'
+        : ` ✗rejected${review.reason ? `: ${review.reason}` : ''}`
+      : '';
+    const agent = (task.assigned_to || '—').padEnd(12);
+    const status = task.status.padEnd(11);
+    const type = `[${(task.type || '?').padEnd(8)}]`;
+    const title = task.title.slice(0, 32).padEnd(32);
+    console.log(`  ${task.id.padEnd(4)} ${type} ${title} ${status} ${agent}${reviewStr}`);
+  }
+
+  console.log('─'.repeat(72));
+  console.log(
+    `  ${summary.done} done, ${summary.in_progress} in_progress, ` +
+    `${summary.pending} pending, ${summary.failed} failed`,
+  );
+
+  // ── Next action hints based on phase ─────────────────────────────────────
+  const doneTasks = tasks.filter((t) => t.status === 'done');
+  const unreviewed = doneTasks.filter((t) => !session.reviews?.[t.id]);
+  const accepted = doneTasks.filter(
+    (t) => session.reviews?.[t.id]?.decision === 'accepted',
+  );
+
+  console.log('');
+  if (session.phase === 'init' || session.phase === 'decomposed') {
+    console.log('Next: assign');
+  } else if (session.phase === 'assigned') {
+    console.log('Next: execute');
+  } else if (unreviewed.length > 0) {
+    const eg = unreviewed[0].id;
+    console.log(`Next: accept ${eg}  |  reject ${eg} "reason"`);
+  } else if (accepted.length > 0 && session.phase !== 'merged') {
+    console.log('Next: merge  |  merge <taskId>');
+  } else if (session.phase === 'merged') {
+    console.log('Next: report');
+  }
+
+  return { session, tasks, summary };
 }
