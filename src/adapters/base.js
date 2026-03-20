@@ -1,12 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { platform } from 'node:os';
+import { platformExec } from '../../platform/detect.js';
 
 const execFileAsync = promisify(execFile);
-
-// On Windows, npm CLIs are installed as .cmd wrappers which cannot be
-// spawned directly by execFile. Route through cmd.exe /c instead.
-const IS_WINDOWS = platform() === 'win32';
 
 /**
  * Base class for all agent adapters.
@@ -77,16 +73,14 @@ export class AgentAdapter {
   /**
    * Internal wrapper for execFile. On Windows, routes through cmd.exe /c
    * so that npm-installed .cmd wrappers (gemini, etc.) resolve correctly.
+   * On Linux/macOS, spawns directly.
    * @param {string} command
    * @param {string[]} args
    * @param {Object} options
    * @returns {Promise<{stdout: string, stderr: string}>}
    */
   async _execFile(command, args, options) {
-    if (IS_WINDOWS) {
-      return execFileAsync('cmd.exe', ['/c', command, ...args], options);
-    }
-    return execFileAsync(command, args, options);
+    return platformExec(execFileAsync, command, args, options);
   }
 
   /**
