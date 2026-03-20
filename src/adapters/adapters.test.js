@@ -18,6 +18,7 @@ describe('ClaudeCodeAdapter', () => {
         '--output-format',
         'json',
         '--no-session-persistence',
+        '--dangerously-skip-permissions',
       ]);
     });
   });

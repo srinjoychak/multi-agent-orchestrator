@@ -34,7 +34,14 @@ export class ClaudeCodeAdapter extends AgentAdapter {
    */
   buildArgs(task, context) {
     const prompt = this._buildPrompt(task, context);
-    return ['-p', prompt, '--output-format', 'json', '--no-session-persistence'];
+    return [
+      '-p', prompt,
+      '--output-format', 'json',
+      '--no-session-persistence',
+      // Grant full tool access within the isolated worktree.
+      // Safe because each task runs in its own git worktree branch.
+      '--dangerously-skip-permissions',
+    ];
   }
 
   /**
@@ -69,9 +76,16 @@ export class ClaudeCodeAdapter extends AgentAdapter {
   async execute(task, context) {
     const result = await super.execute(task, context);
 
-    // If no files were detected via parseOutput, try git diff as fallback
-    if (!result.filesChanged || result.filesChanged.length === 0) {
-      result.filesChanged = await this._getChangedFiles(context.workDir);
+    // Detect changed files via git diff — JSON output does not include them
+    result.filesChanged = await this._getChangedFiles(context.workDir);
+
+    // False-positive guard: Claude returns is_error:false even when tool calls
+    // are permission-denied. For tasks that must produce file changes, treat
+    // zero changed files as a failure so the Tech Lead can reinvoke.
+    const writingTask = ['code', 'refactor', 'test', 'debug'].includes(task.type);
+    if (result.status === 'done' && writingTask && result.filesChanged.length === 0) {
+      result.status = 'failed';
+      result.summary = `[no files changed] ${result.summary}`;
     }
 
     return result;

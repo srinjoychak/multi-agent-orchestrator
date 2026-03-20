@@ -1,7 +1,12 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { platform } from 'node:os';
 
 const execFileAsync = promisify(execFile);
+
+// On Windows, npm CLIs are installed as .cmd wrappers which cannot be
+// spawned directly by execFile. Route through cmd.exe /c instead.
+const IS_WINDOWS = platform() === 'win32';
 
 /**
  * Base class for all agent adapters.
@@ -29,7 +34,6 @@ export class AgentAdapter {
    */
   async isAvailable() {
     try {
-      // Try running with --version or --help to check existence
       const versionFlag = this.getVersionFlag();
       await this._execFile(this.command, [versionFlag], { timeout: 10_000 });
       return true;
@@ -71,13 +75,17 @@ export class AgentAdapter {
   }
 
   /**
-   * Internal wrapper for execFile to facilitate mocking in tests.
+   * Internal wrapper for execFile. On Windows, routes through cmd.exe /c
+   * so that npm-installed .cmd wrappers (gemini, etc.) resolve correctly.
    * @param {string} command
    * @param {string[]} args
    * @param {Object} options
    * @returns {Promise<{stdout: string, stderr: string}>}
    */
   async _execFile(command, args, options) {
+    if (IS_WINDOWS) {
+      return execFileAsync('cmd.exe', ['/c', command, ...args], options);
+    }
     return execFileAsync(command, args, options);
   }
 
