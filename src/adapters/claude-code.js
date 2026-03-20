@@ -1,10 +1,18 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { AgentAdapter } from './base.js';
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Adapter for Claude Code CLI.
  *
- * Invokes: claude -p "<prompt>" --output-format json
+ * Invokes: claude -p "<prompt>" --output-format json --no-session-persistence
  * Works in the assigned git worktree directory.
+ *
+ * Real JSON output schema (--output-format json):
+ *   { type: 'result', subtype: 'success'|'error_*', is_error: boolean,
+ *     result: string, duration_ms: number, session_id: string, ... }
  */
 export class ClaudeCodeAdapter extends AgentAdapter {
   constructor(options = {}) {
@@ -23,7 +31,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
    */
   buildArgs(task, context) {
     const prompt = this._buildPrompt(task, context);
-    return ['-p', prompt, '--output-format', 'json'];
+    return ['-p', prompt, '--output-format', 'json', '--no-session-persistence'];
   }
 
   /**
@@ -50,7 +58,25 @@ export class ClaudeCodeAdapter extends AgentAdapter {
   }
 
   /**
+   * Execute a task and detect changed files via git diff after completion.
+   * @param {import('../types/index.js').Task} task
+   * @param {import('../types/index.js').TaskContext} context
+   * @returns {Promise<import('../types/index.js').TaskResult>}
+   */
+  async execute(task, context) {
+    const result = await super.execute(task, context);
+
+    // If no files were detected via parseOutput, try git diff as fallback
+    if (!result.filesChanged || result.filesChanged.length === 0) {
+      result.filesChanged = await this._getChangedFiles(context.workDir);
+    }
+
+    return result;
+  }
+
+  /**
    * Parse Claude Code JSON output into TaskResult.
+   *
    * @param {string} stdout
    * @param {string} stderr
    * @param {number} duration_ms
@@ -59,16 +85,26 @@ export class ClaudeCodeAdapter extends AgentAdapter {
   parseOutput(stdout, stderr, duration_ms) {
     try {
       const parsed = JSON.parse(stdout);
+      const isError = parsed.is_error === true;
 
-      // Claude Code --output-format json returns a structured response
-      // Extract the result text and any file changes
-      const resultText = this._extractResultText(parsed);
-      const filesChanged = this._extractFilesChanged(parsed);
+      let summary = '';
+      if (parsed.result) {
+        summary = parsed.result;
+      } else if (parsed.text) {
+        summary = parsed.text;
+      } else if (Array.isArray(parsed.content)) {
+        summary = parsed.content
+          .filter((item) => item.type === 'text')
+          .map((item) => item.text)
+          .join('');
+      } else {
+        summary = JSON.stringify(parsed).slice(0, 500);
+      }
 
       return {
-        status: 'done',
-        summary: resultText,
-        filesChanged,
+        status: isError ? 'failed' : 'done',
+        summary,
+        filesChanged: this._extractFilesChanged(parsed),
         output: stdout,
         duration_ms,
       };
@@ -85,38 +121,37 @@ export class ClaudeCodeAdapter extends AgentAdapter {
   }
 
   /**
-   * Extract human-readable result text from Claude Code JSON output.
-   * @param {Object} parsed
-   * @returns {string}
-   */
-  _extractResultText(parsed) {
-    // Claude Code JSON output structure may vary — handle common shapes
-    if (typeof parsed === 'string') return parsed;
-    if (parsed.result) return String(parsed.result);
-    if (parsed.text) return String(parsed.text);
-    if (parsed.content) {
-      if (typeof parsed.content === 'string') return parsed.content;
-      if (Array.isArray(parsed.content)) {
-        return parsed.content
-          .filter((c) => c.type === 'text')
-          .map((c) => c.text)
-          .join('\n');
-      }
-    }
-    return JSON.stringify(parsed).slice(0, 500);
-  }
-
-  /**
-   * Extract list of changed files from Claude Code JSON output.
-   * @param {Object} parsed
+   * Extract list of changed files from parsed JSON output.
+   * @param {any} parsed
    * @returns {string[]}
    */
   _extractFilesChanged(parsed) {
-    // Look for file change indicators in the output
-    if (parsed.files_changed) return parsed.files_changed;
-    if (parsed.changes && Array.isArray(parsed.changes)) {
-      return parsed.changes.map((c) => c.file || c.path).filter(Boolean);
+    if (Array.isArray(parsed.files_changed)) {
+      return parsed.files_changed;
+    }
+    if (Array.isArray(parsed.changes)) {
+      return parsed.changes
+        .filter((c) => c && typeof c.file === 'string')
+        .map((c) => c.file);
     }
     return [];
+  }
+
+  /**
+   * Get list of files changed in the worktree since the last commit.
+   * @param {string} workDir
+   * @returns {Promise<string[]>}
+   */
+  async _getChangedFiles(workDir) {
+    try {
+      const { stdout } = await execFileAsync(
+        'git',
+        ['diff', '--name-only', 'HEAD'],
+        { cwd: workDir, timeout: 5_000 },
+      );
+      return stdout.split('\n').map((f) => f.trim()).filter(Boolean);
+    } catch {
+      return [];
+    }
   }
 }

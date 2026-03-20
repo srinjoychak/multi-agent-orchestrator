@@ -30,7 +30,7 @@ export class AgentAdapter {
     try {
       // Try running with --version or --help to check existence
       const versionFlag = this.getVersionFlag();
-      await execFileAsync(this.command, [versionFlag], { timeout: 10_000 });
+      await this._execFile(this.command, [versionFlag], { timeout: 10_000 });
       return true;
     } catch {
       return false;
@@ -70,6 +70,17 @@ export class AgentAdapter {
   }
 
   /**
+   * Internal wrapper for execFile to facilitate mocking in tests.
+   * @param {string} command
+   * @param {string[]} args
+   * @param {Object} options
+   * @returns {Promise<{stdout: string, stderr: string}>}
+   */
+  async _execFile(command, args, options) {
+    return execFileAsync(command, args, options);
+  }
+
+  /**
    * Execute a task using the CLI tool.
    * @param {import('../types/index.js').Task} task
    * @param {import('../types/index.js').TaskContext} context
@@ -80,7 +91,7 @@ export class AgentAdapter {
     const startTime = Date.now();
 
     try {
-      const { stdout, stderr } = await execFileAsync(this.command, args, {
+      const { stdout, stderr } = await this._execFile(this.command, args, {
         cwd: context.workDir,
         timeout: this.timeoutMs,
         maxBuffer: 10 * 1024 * 1024, // 10MB

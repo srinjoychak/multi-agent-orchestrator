@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node src/orchestrator/index.js",
-    "test": "node --test src/**/*.test.js",
+    "test": "node --test src/**/*.test.js tests/**/*.test.js",
     "check-agents": "node src/adapters/check.js"
   },
   "keywords": [
