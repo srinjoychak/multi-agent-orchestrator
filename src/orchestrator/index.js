@@ -13,7 +13,7 @@
  */
 
 import { join, resolve } from 'node:path';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -92,16 +92,22 @@ export class Orchestrator {
 
   /**
    * Run the full orchestration pipeline.
-   * @param {string} userPrompt - Natural language request from user
+   * @param {string|import('../types/index.js').Task[]} input - User prompt or pre-loaded tasks
    */
-  async run(userPrompt) {
+  async run(input) {
     this._running = true;
 
     try {
-      // Step 1: Decompose the user prompt into tasks
-      console.log('Step 1: Decomposing request into tasks...');
-      const tasks = await this.decomposeTasks(userPrompt);
-      console.log(`  Created ${tasks.length} tasks.\n`);
+      let tasks;
+      if (typeof input === 'string') {
+        // Step 1: Decompose the user prompt into tasks
+        console.log('Step 1: Decomposing request into tasks...');
+        tasks = await this.decomposeTasks(input);
+      } else {
+        tasks = input;
+        console.log(`Step 1: Skipped (loaded ${tasks.length} tasks from file).`);
+      }
+      console.log(`  Working with ${tasks.length} tasks.\n`);
 
       // Step 2: Assign tasks to agents (round-robin)
       console.log('Step 2: Assigning tasks to agents...');
@@ -130,6 +136,34 @@ export class Orchestrator {
     } finally {
       this._running = false;
       await this.comms.destroy();
+    }
+  }
+
+  /**
+   * Load tasks from a JSON file instead of decomposing from a prompt.
+   * @param {string} filePath - Absolute or relative path to tasks JSON file
+   * @returns {Promise<import('../types/index.js').Task[]>}
+   */
+  async loadTasksFromFile(filePath) {
+    const absolutePath = resolve(filePath);
+    if (!existsSync(absolutePath)) {
+      console.error(`Error: Tasks file not found: ${absolutePath}`);
+      process.exit(1);
+    }
+
+    try {
+      const content = await readFile(absolutePath, 'utf-8');
+      const parsed = JSON.parse(content);
+      const taskList = Array.isArray(parsed) ? parsed : (parsed.tasks || []);
+
+      if (!Array.isArray(taskList)) {
+        throw new Error('Tasks file must contain an array of tasks or an object with a "tasks" array.');
+      }
+
+      return await this.taskManager.addTasks(taskList);
+    } catch (error) {
+      console.error(`Error parsing tasks file: ${error.message}`);
+      process.exit(1);
     }
   }
 
@@ -209,57 +243,139 @@ export class Orchestrator {
   }
 
   /**
-   * Execute all in_progress tasks in parallel.
+   * Execute all tasks in dependency-aware parallel waves.
    */
   async executeTasks() {
-    const tasks = await this.taskManager.getTasks();
-    const inProgress = tasks.filter((t) => t.status === 'in_progress');
+    while (true) {
+      const allTasks = await this.taskManager.getTasks();
 
-    const executions = inProgress.map(async (task) => {
-      const adapter = this.adapters.get(task.assigned_to);
-      if (!adapter) {
-        console.error(`  No adapter for ${task.assigned_to}`);
-        return;
+      // 1. Mark tasks with failed dependencies as failed
+      await this._handleFailedDependencies(allTasks);
+
+      // 2. Check if all tasks are complete
+      if (await this.taskManager.isAllComplete()) {
+        break;
       }
 
-      try {
-        // Create worktree
-        const worktreePath = join(this.worktreesDir, `${task.assigned_to}-${task.id}`);
-        await this._createWorktree(worktreePath, task.worktree_branch);
-
-        const context = {
-          workDir: worktreePath,
-          branch: task.worktree_branch,
-          projectRoot: this.projectRoot,
-          teamConfig: { adapters: Array.from(this.adapters.keys()) },
-        };
-
-        console.log(`  Executing ${task.id} with ${task.assigned_to}...`);
-        const result = await adapter.execute(task, context);
-
-        // Save result
-        const resultPath = join(this.merger.resultsDir, `${task.id}.json`);
-        await writeFile(resultPath, JSON.stringify({
-          task_id: task.id,
-          agent: task.assigned_to,
-          ...result,
-        }, null, 2));
-
-        // Update task status
-        await this.taskManager.updateStatus(task.id, result.status, {
-          result_ref: resultPath,
-        });
-
-        console.log(`  ${task.id} ${result.status}: ${result.summary.slice(0, 100)}`);
-      } catch (error) {
-        console.error(`  ${task.id} error: ${error.message}`);
-        try {
-          await this.taskManager.updateStatus(task.id, 'failed');
-        } catch { /* ignore */ }
+      // 3. Get ready tasks (pending and unblocked)
+      const readyTasks = this._getReadyTasks(allTasks);
+      
+      // 4. Handle tasks that are already in_progress (from initial assignTasks)
+      const inProgress = allTasks.filter((t) => t.status === 'in_progress');
+      
+      const tasksToRun = [...inProgress];
+      
+      // Assign and add ready tasks
+      if (readyTasks.length > 0) {
+        await this.assignTasks(readyTasks);
+        // Refresh after assignment
+        const refreshed = await this.taskManager.getTasks();
+        const newlyInProgress = refreshed.filter((t) => 
+          readyTasks.some(r => r.id === t.id) && t.status === 'in_progress'
+        );
+        tasksToRun.push(...newlyInProgress);
       }
+
+      if (tasksToRun.length > 0) {
+        // Log current wave
+        const ids = tasksToRun.map(t => t.id).join(', ');
+        console.log(`  Wave: starting tasks [${ids}]`);
+        
+        // Execute this wave in parallel
+        const wave = tasksToRun.map((task) => this._runTask(task));
+        await Promise.all(wave);
+      } else {
+        // Nothing ready, wait for polling
+        const summary = await this.taskManager.getSummary();
+        console.log(
+          `  Progress: ${summary.done} done, ${summary.pending} blocked, ${summary.failed} failed`,
+        );
+        await new Promise((r) => setTimeout(r, this.pollIntervalMs));
+      }
+    }
+  }
+
+  /**
+   * Return tasks that are ready to execute (all depends_on are done).
+   * @param {import('../types/index.js').Task[]} tasks
+   * @returns {import('../types/index.js').Task[]}
+   */
+  _getReadyTasks(tasks) {
+    return tasks.filter((task) => {
+      if (task.status !== 'pending') return false;
+      if (task.depends_on.length === 0) return true;
+      return task.depends_on.every((depId) => {
+        const dep = tasks.find((t) => t.id === depId);
+        return dep && dep.status === 'done';
+      });
     });
+  }
 
-    await Promise.all(executions);
+  /**
+   * Mark pending tasks as failed if their dependencies failed.
+   * @param {import('../types/index.js').Task[]} tasks
+   */
+  async _handleFailedDependencies(tasks) {
+    for (const task of tasks.filter((t) => t.status === 'pending')) {
+      const failedDep = task.depends_on.find((depId) => {
+        const dep = tasks.find((t) => t.id === depId);
+        return dep && dep.status === 'failed';
+      });
+
+      if (failedDep) {
+        await this.taskManager.updateStatus(task.id, 'failed', {
+          summary: `Skipped: dependency ${failedDep} failed`,
+        });
+      }
+    }
+  }
+
+  /**
+   * Execute a single task using its assigned adapter.
+   * @param {import('../types/index.js').Task} task
+   */
+  async _runTask(task) {
+    const adapter = this.adapters.get(task.assigned_to);
+    if (!adapter) {
+      console.error(`  No adapter for ${task.assigned_to}`);
+      return;
+    }
+
+    try {
+      // Create worktree
+      const worktreePath = join(this.worktreesDir, `${task.assigned_to}-${task.id}`);
+      await this._createWorktree(worktreePath, task.worktree_branch);
+
+      const context = {
+        workDir: worktreePath,
+        branch: task.worktree_branch,
+        projectRoot: this.projectRoot,
+        teamConfig: { adapters: Array.from(this.adapters.keys()) },
+      };
+
+      console.log(`  Executing ${task.id} with ${task.assigned_to}...`);
+      const result = await adapter.execute(task, context);
+
+      // Save result
+      const resultPath = join(this.merger.resultsDir, `${task.id}.json`);
+      await writeFile(resultPath, JSON.stringify({
+        task_id: task.id,
+        agent: task.assigned_to,
+        ...result,
+      }, null, 2));
+
+      // Update task status
+      await this.taskManager.updateStatus(task.id, result.status, {
+        result_ref: resultPath,
+      });
+
+      console.log(`  ${task.id} ${result.status}: ${result.summary.slice(0, 100)}`);
+    } catch (error) {
+      console.error(`  ${task.id} error: ${error.message}`);
+      try {
+        await this.taskManager.updateStatus(task.id, 'failed');
+      } catch { /* ignore */ }
+    }
   }
 
   /**
@@ -338,32 +454,52 @@ export class Orchestrator {
 
 const args = process.argv.slice(2);
 
-if (args.length > 0 && !args[0].startsWith('-')) {
-  const prompt = args.join(' ');
+/**
+ * Main CLI handler
+ */
+async function main() {
   const orchestrator = new Orchestrator(process.cwd());
-  orchestrator
-    .initialize()
-    .then(() => orchestrator.run(prompt))
-    .catch((error) => {
-      console.error(`\nOrchestration failed: ${error.message}`);
+
+  if (args.includes('--tasks')) {
+    const fileIdx = args.indexOf('--tasks') + 1;
+    const filePath = args[fileIdx];
+    if (!filePath) {
+      console.error('Error: --tasks requires a file path');
       process.exit(1);
-    });
-} else if (args.includes('--help') || args.length === 0) {
-  console.log(`
+    }
+
+    await orchestrator.initialize();
+    const tasks = await orchestrator.loadTasksFromFile(filePath);
+    await orchestrator.run(tasks);
+  } else if (args.length > 0 && !args[0].startsWith('-')) {
+    const prompt = args.join(' ');
+    await orchestrator.initialize();
+    await orchestrator.run(prompt);
+  } else if (args.includes('--help') || args.length === 0) {
+    console.log(`
 Multi-Agent Orchestrator — POC v1
 
 Usage:
   node src/orchestrator/index.js "Your task description here"
+  node src/orchestrator/index.js --tasks tasks.json
   node src/orchestrator/index.js --check-agents
 
 Options:
+  --tasks <file>    Load tasks from a JSON file instead of decomposing a prompt
   --check-agents    Check which AI CLI agents are available
   --help            Show this help message
 
 Examples:
   node src/orchestrator/index.js "Build a REST API with user auth and unit tests"
-  node src/orchestrator/index.js "Review src/ for security vulnerabilities and performance issues"
-  `);
-} else if (args.includes('--check-agents')) {
-  import('../adapters/check.js');
+  node src/orchestrator/index.js --tasks my-tasks.json
+  node src/orchestrator/index.js --check-agents
+    `);
+  } else if (args.includes('--check-agents')) {
+    await import('../adapters/check.js');
+  }
 }
+
+main().catch((error) => {
+  console.error(`\nOrchestration failed: ${error.message}`);
+  process.exit(1);
+});

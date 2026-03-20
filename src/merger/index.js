@@ -44,24 +44,36 @@ export class ResultMerger {
   }
 
   /**
+   * Internal wrapper for execFile to facilitate mocking in tests.
+   * @param {string} command
+   * @param {string[]} args
+   * @param {Object} options
+   * @returns {Promise<{stdout: string, stderr: string}>}
+   */
+  async _execFile(command, args, options) {
+    return execFileAsync(command, args, options);
+  }
+
+  /**
    * Merge an agent's branch into the current branch.
    * @param {string} branchName - Branch to merge
    * @returns {Promise<{success: boolean, conflicts: string[], output: string}>}
    */
   async mergeBranch(branchName) {
     try {
-      const { stdout } = await execFileAsync('git', ['merge', '--no-ff', branchName], {
+      const { stdout } = await this._execFile('git', ['merge', '--no-ff', branchName], {
         cwd: this.projectRoot,
       });
       return { success: true, conflicts: [], output: stdout };
     } catch (error) {
+      const output = (error.stdout || '') + (error.stderr || '');
       // Check for merge conflicts
-      if (error.stdout?.includes('CONFLICT') || error.stderr?.includes('CONFLICT')) {
+      if (output.includes('CONFLICT')) {
         // Abort the failed merge
-        await execFileAsync('git', ['merge', '--abort'], { cwd: this.projectRoot });
+        await this._execFile('git', ['merge', '--abort'], { cwd: this.projectRoot }).catch(() => {});
 
-        const conflicts = this._parseConflicts(error.stdout + error.stderr);
-        return { success: false, conflicts, output: error.stdout || error.stderr };
+        const conflicts = this._parseConflicts(output);
+        return { success: false, conflicts, output };
       }
       throw error;
     }
@@ -102,7 +114,7 @@ export class ResultMerger {
    */
   async cleanupWorktree(worktreePath, branchName) {
     try {
-      await execFileAsync('git', ['worktree', 'remove', worktreePath, '--force'], {
+      await this._execFile('git', ['worktree', 'remove', worktreePath, '--force'], {
         cwd: this.projectRoot,
       });
     } catch {
@@ -111,7 +123,7 @@ export class ResultMerger {
 
     if (branchName) {
       try {
-        await execFileAsync('git', ['branch', '-D', branchName], {
+        await this._execFile('git', ['branch', '-D', branchName], {
           cwd: this.projectRoot,
         });
       } catch {
@@ -169,13 +181,19 @@ export class ResultMerger {
    * @returns {string[]}
    */
   _parseConflicts(output) {
-    const conflicts = [];
-    const regex = /CONFLICT.*?:\s*(?:Merge conflict in\s+)?(.+)/g;
+    const conflicts = new Set();
+    
+    // Pattern 1: CONFLICT (content): Merge conflict in <file>
+    const regex1 = /CONFLICT.*?:\s*(?:Merge conflict in\s+)?([^\s]+)/g;
     let match;
-    while ((match = regex.exec(output)) !== null) {
-      conflicts.push(match[1].trim());
+    while ((match = regex1.exec(output)) !== null) {
+      conflicts.add(match[1].trim());
     }
-    return conflicts;
+
+    // Pattern 2: CONFLICT (modify/delete): <file> deleted in ...
+    // This is already covered by regex1 if we stop at the first space
+    
+    return Array.from(conflicts);
   }
 
   /**
