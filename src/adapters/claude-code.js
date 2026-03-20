@@ -16,7 +16,10 @@ const execFileAsync = promisify(execFile);
  */
 export class ClaudeCodeAdapter extends AgentAdapter {
   constructor(options = {}) {
-    super('claude-code', 'claude', options);
+    super('claude-code', 'claude', {
+      ...options,
+      capabilities: ['code', 'refactor', 'test', 'review', 'debug'],
+    });
   }
 
   getVersionFlag() {

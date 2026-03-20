@@ -15,7 +15,10 @@ const execFileAsync = promisify(execFile);
  */
 export class GeminiAdapter extends AgentAdapter {
   constructor(options = {}) {
-    super('gemini', 'gemini', options);
+    super('gemini', 'gemini', {
+      ...options,
+      capabilities: ['research', 'docs', 'analysis', 'code', 'test'],
+    });
   }
 
   getVersionFlag() {
