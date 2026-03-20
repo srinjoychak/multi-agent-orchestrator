@@ -45,19 +45,25 @@ export class GeminiAdapter extends AgentAdapter {
    * @returns {string}
    */
   _buildPrompt(task, context) {
+    const retryNote = task.retries > 0
+      ? `\nNOTE: This task has failed ${task.retries} time(s) before. Previous attempts did not write files. You MUST write files this time.\n`
+      : '';
+
     return [
       `Task: ${task.title}`,
       '',
       task.description,
-      '',
+      retryNote,
       `Working directory: ${context.workDir}`,
       `Branch: ${context.branch}`,
       '',
-      'Instructions:',
-      '- Complete the task described above.',
-      '- Only modify files relevant to this task.',
-      '- Do not modify files outside the scope of this task.',
-      '- When done, provide a summary of changes made.',
+      'RULES — read these carefully before doing anything:',
+      '1. Your FIRST action must be to write or edit the required files. Do not spend time reading files unless the task explicitly requires it to determine what to write.',
+      '2. Use your file writing tools (write_file, replace, create) directly. Do NOT use shell commands to write files.',
+      '3. Do NOT describe what you plan to do. Just do it immediately.',
+      '4. Do NOT delegate to a subagent. You must write the files yourself.',
+      '5. Only modify files that are directly required by this task.',
+      '6. When all required files are written, provide a brief summary: which files you changed and what you changed.',
     ].join('\n');
   }
 

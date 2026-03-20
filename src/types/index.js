@@ -91,7 +91,7 @@ export function createTask(overrides = {}) {
     depends_on: overrides.depends_on || [],
     result_ref: null,
     worktree_branch: null,
-    retries: 0,
+    retries: overrides.retry_count ?? 0,  // accept legacy 'retry_count' field from manual seeds
     max_retries: overrides.max_retries ?? 3,
     previous_agents: overrides.previous_agents || [],
     ...overrides,
