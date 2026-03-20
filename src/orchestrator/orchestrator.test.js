@@ -4,6 +4,7 @@ import { Orchestrator } from './index.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 
 describe('Orchestrator', () => {
@@ -11,6 +12,95 @@ describe('Orchestrator', () => {
 
   afterEach(() => {
     mock.restoreAll();
+  });
+
+  describe('initialize()', () => {
+    it('creates all necessary directories including resultsDir', async () => {
+      const rootDir = join(tmpdir(), `orch-init-test-${randomUUID()}`);
+      const orchestrator = new Orchestrator(rootDir);
+      
+      // Mock adapters to avoid CLI checks
+      mock.method(orchestrator.adapters, 'set');
+      // We also need to mock isAvailable on candidates inside initialize
+      // But candidates are created locally. 
+      // Instead, let's mock the methods that might fail if dependencies aren't met.
+      mock.method(orchestrator.taskManager, 'initialize', async () => {});
+      mock.method(orchestrator.comms, 'initialize', async () => {});
+
+      // Use a simpler approach: check if mkdir was called or just check disk after
+      await orchestrator.initialize().catch(() => {}); // may throw if no agents, that's fine
+
+      assert.ok(existsSync(orchestrator.agentTeamDir));
+      assert.ok(existsSync(orchestrator.worktreesDir));
+      assert.ok(existsSync(orchestrator.merger.resultsDir));
+
+      await rm(rootDir, { recursive: true, force: true });
+    });
+  });
+
+  describe('monitorUntilComplete()', () => {
+    it('calls resetStaleClaims() on each iteration', async () => {
+      const orchestrator = new Orchestrator('/tmp/test');
+      orchestrator._running = true;
+      
+      const resetMock = mock.method(orchestrator.taskManager, 'resetStaleClaims', async () => []);
+      const completeMock = mock.method(orchestrator.taskManager, 'isAllComplete', async () => {
+        orchestrator._running = false; // Stop the loop after one iteration
+        return true;
+      });
+
+      await orchestrator.monitorUntilComplete();
+      
+      assert.equal(resetMock.mock.callCount(), 1);
+      assert.equal(completeMock.mock.callCount(), 1);
+    });
+  });
+
+  describe('executeTasks()', () => {
+    it('dispatches each task exactly once', async () => {
+      const orchestrator = new Orchestrator('/tmp/test');
+      
+      const tasks = [
+        { id: 'T1', status: 'pending', depends_on: [] },
+        { id: 'T2', status: 'pending', depends_on: ['T1'] }
+      ];
+
+      // Stub taskManager methods
+      mock.method(orchestrator.taskManager, 'getTasks', async () => tasks);
+      mock.method(orchestrator.taskManager, 'isAllComplete', async () => {
+        return tasks.every(t => t.status === 'done' || t.status === 'failed');
+      });
+
+      mock.method(orchestrator.taskManager, 'getSummary', async () => ({
+        done: tasks.filter(t => t.status === 'done').length,
+        pending: tasks.filter(t => t.status === 'pending').length,
+        failed: tasks.filter(t => t.status === 'failed').length
+      }));
+
+      mock.method(orchestrator, '_handleFailedDependencies', async () => {});
+      mock.method(orchestrator, 'assignTasks', async (ts) => {
+        ts.forEach(t => {
+          const task = tasks.find(rt => rt.id === t.id);
+          if (task) task.status = 'in_progress';
+        });
+      });
+
+      const dispatchedCount = new Map();
+      mock.method(orchestrator, '_runTask', async (task) => {
+        dispatchedCount.set(task.id, (dispatchedCount.get(task.id) || 0) + 1);
+        // Find the task in our local array and mark it done
+        const t = tasks.find(rt => rt.id === task.id);
+        if (t) t.status = 'done';
+      });
+
+      // Override poll interval for fast test
+      orchestrator.pollIntervalMs = 1;
+
+      await orchestrator.executeTasks();
+
+      assert.equal(dispatchedCount.get('T1'), 1);
+      assert.equal(dispatchedCount.get('T2'), 1);
+    });
   });
 
   describe('_getReadyTasks()', () => {
@@ -97,6 +187,40 @@ describe('Orchestrator', () => {
       const loaded = await orchestrator.loadTasksFromFile(filePath);
       assert.equal(loaded.length, 1);
       assert.equal(loaded[0].id, 'T2');
+      
+      await rm(testDir, { recursive: true, force: true });
+    });
+
+    it('throws error when file is missing', async () => {
+      const filePath = join(testDir, 'missing.json');
+      await assert.rejects(
+        () => orchestrator.loadTasksFromFile(filePath),
+        /Tasks file not found/
+      );
+    });
+
+    it('throws error on invalid JSON', async () => {
+      await mkdir(testDir, { recursive: true });
+      const filePath = join(testDir, 'invalid.json');
+      await writeFile(filePath, 'not json');
+
+      await assert.rejects(
+        () => orchestrator.loadTasksFromFile(filePath),
+        /Invalid JSON in tasks file/
+      );
+      
+      await rm(testDir, { recursive: true, force: true });
+    });
+
+    it('throws error when no tasks found', async () => {
+      await mkdir(testDir, { recursive: true });
+      const filePath = join(testDir, 'empty.json');
+      await writeFile(filePath, JSON.stringify([]));
+
+      await assert.rejects(
+        () => orchestrator.loadTasksFromFile(filePath),
+        /Tasks file contains no tasks/
+      );
       
       await rm(testDir, { recursive: true, force: true });
     });
