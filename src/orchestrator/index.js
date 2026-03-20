@@ -512,12 +512,12 @@ const args = process.argv.slice(2);
  * Main CLI handler
  */
 async function main() {
-  const orchestrator = new Orchestrator(process.cwd());
-
   if (args.includes('--version') || args.includes('-v')) {
     console.log('multi-agent-orchestrator v0.1.0');
     process.exit(0);
   }
+
+  const orchestrator = new Orchestrator(process.cwd());
 
   if (args.includes('--tasks')) {
     const fileIdx = args.indexOf('--tasks') + 1;
