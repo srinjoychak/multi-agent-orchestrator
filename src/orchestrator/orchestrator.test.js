@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { ClaudeCodeAdapter } from '../adapters/claude-code.js';
+import { GeminiAdapter } from '../adapters/gemini.js';
 
 describe('Orchestrator', () => {
   const orchestrator = new Orchestrator('/tmp/test-project');
@@ -19,22 +21,31 @@ describe('Orchestrator', () => {
       const rootDir = join(tmpdir(), `orch-init-test-${randomUUID()}`);
       const orchestrator = new Orchestrator(rootDir);
       
-      // Mock adapters to avoid CLI checks
-      mock.method(orchestrator.adapters, 'set');
-      // We also need to mock isAvailable on candidates inside initialize
-      // But candidates are created locally. 
-      // Instead, let's mock the methods that might fail if dependencies aren't met.
       mock.method(orchestrator.taskManager, 'initialize', async () => {});
       mock.method(orchestrator.comms, 'initialize', async () => {});
 
-      // Use a simpler approach: check if mkdir was called or just check disk after
-      await orchestrator.initialize().catch(() => {}); // may throw if no agents, that's fine
+      await orchestrator.initialize().catch(() => {});
 
       assert.ok(existsSync(orchestrator.agentTeamDir));
       assert.ok(existsSync(orchestrator.worktreesDir));
       assert.ok(existsSync(orchestrator.merger.resultsDir));
 
       await rm(rootDir, { recursive: true, force: true });
+    });
+
+    it('prints the startup banner', async () => {
+      const orchestrator = new Orchestrator('/tmp/banner-test');
+      
+      const logMock = mock.method(console, 'log', () => {});
+      mock.method(orchestrator.taskManager, 'initialize', async () => {});
+      mock.method(orchestrator.comms, 'initialize', async () => {});
+      
+      await orchestrator.initialize().catch(() => {});
+
+      const bannerLogged = logMock.mock.calls.some(call => 
+        typeof call.arguments[0] === 'string' && call.arguments[0].includes('Multi-Agent')
+      );
+      assert.ok(bannerLogged, 'Startup banner should be logged');
     });
   });
 
@@ -45,7 +56,7 @@ describe('Orchestrator', () => {
       
       const resetMock = mock.method(orchestrator.taskManager, 'resetStaleClaims', async () => []);
       const completeMock = mock.method(orchestrator.taskManager, 'isAllComplete', async () => {
-        orchestrator._running = false; // Stop the loop after one iteration
+        orchestrator._running = false;
         return true;
       });
 
@@ -65,7 +76,6 @@ describe('Orchestrator', () => {
         { id: 'T2', status: 'pending', depends_on: ['T1'] }
       ];
 
-      // Stub taskManager methods
       mock.method(orchestrator.taskManager, 'getTasks', async () => tasks);
       mock.method(orchestrator.taskManager, 'isAllComplete', async () => {
         return tasks.every(t => t.status === 'done' || t.status === 'failed');
@@ -88,12 +98,10 @@ describe('Orchestrator', () => {
       const dispatchedCount = new Map();
       mock.method(orchestrator, '_runTask', async (task) => {
         dispatchedCount.set(task.id, (dispatchedCount.get(task.id) || 0) + 1);
-        // Find the task in our local array and mark it done
         const t = tasks.find(rt => rt.id === task.id);
         if (t) t.status = 'done';
       });
 
-      // Override poll interval for fast test
       orchestrator.pollIntervalMs = 1;
 
       await orchestrator.executeTasks();
@@ -107,10 +115,10 @@ describe('Orchestrator', () => {
     it('returns only pending tasks with all depends_on met', () => {
       const tasks = [
         { id: 'T1', status: 'done', depends_on: [] },
-        { id: 'T2', status: 'pending', depends_on: ['T1'] }, // Ready
-        { id: 'T3', status: 'pending', depends_on: ['T4'] }, // Blocked
-        { id: 'T4', status: 'pending', depends_on: [] },    // Ready
-        { id: 'T5', status: 'in_progress', depends_on: [] }  // Not pending
+        { id: 'T2', status: 'pending', depends_on: ['T1'] },
+        { id: 'T3', status: 'pending', depends_on: ['T4'] },
+        { id: 'T4', status: 'pending', depends_on: [] },
+        { id: 'T5', status: 'in_progress', depends_on: [] }
       ];
 
       const ready = orchestrator._getReadyTasks(tasks);
@@ -223,6 +231,92 @@ describe('Orchestrator', () => {
       );
       
       await rm(testDir, { recursive: true, force: true });
+    });
+  });
+
+  describe('assignTasks()', () => {
+    it('assigns task with type: "code" to claude-code', async () => {
+      const orchestrator = new Orchestrator('/tmp/test');
+      const claude = new ClaudeCodeAdapter();
+      const gemini = new GeminiAdapter();
+      orchestrator.adapters.set(claude.name, claude);
+      orchestrator.adapters.set(gemini.name, gemini);
+
+      const tasks = [{ id: 'T1', title: 'Code Task', type: 'code' }];
+      const claimMock = mock.method(orchestrator.taskManager, 'claimTask', async () => ({}));
+      mock.method(orchestrator.taskManager, 'updateStatus', async () => ({}));
+
+      await orchestrator.assignTasks(tasks);
+
+      assert.equal(claimMock.mock.calls[0].arguments[1], 'claude-code');
+    });
+
+    it('assigns task with type: "research" to gemini', async () => {
+      const orchestrator = new Orchestrator('/tmp/test');
+      const claude = new ClaudeCodeAdapter();
+      const gemini = new GeminiAdapter();
+      orchestrator.adapters.set(claude.name, claude);
+      orchestrator.adapters.set(gemini.name, gemini);
+
+      const tasks = [{ id: 'T1', title: 'Research Task', type: 'research' }];
+      const claimMock = mock.method(orchestrator.taskManager, 'claimTask', async () => ({}));
+      mock.method(orchestrator.taskManager, 'updateStatus', async () => ({}));
+
+      await orchestrator.assignTasks(tasks);
+
+      assert.equal(claimMock.mock.calls[0].arguments[1], 'gemini');
+    });
+
+    it('falls back to round-robin for type: null', async () => {
+      const orchestrator = new Orchestrator('/tmp/test');
+      const claude = new ClaudeCodeAdapter();
+      const gemini = new GeminiAdapter();
+      orchestrator.adapters.set(claude.name, claude);
+      orchestrator.adapters.set(gemini.name, gemini);
+
+      const tasks = [
+        { id: 'T1', title: 'Task 1', type: null },
+        { id: 'T2', title: 'Task 2', type: null }
+      ];
+      const claimMock = mock.method(orchestrator.taskManager, 'claimTask', async () => ({}));
+      mock.method(orchestrator.taskManager, 'updateStatus', async () => ({}));
+
+      await orchestrator.assignTasks(tasks);
+
+      const assignedAgents = claimMock.mock.calls.map(c => c.arguments[1]);
+      assert.deepEqual(assignedAgents, ['claude-code', 'gemini']);
+    });
+
+    it('falls back to round-robin for unknown type', async () => {
+      const orchestrator = new Orchestrator('/tmp/test');
+      const claude = new ClaudeCodeAdapter();
+      orchestrator.adapters.set(claude.name, claude);
+
+      const tasks = [{ id: 'T1', title: 'Unknown Task', type: 'painting' }];
+      const claimMock = mock.method(orchestrator.taskManager, 'claimTask', async () => ({}));
+      mock.method(orchestrator.taskManager, 'updateStatus', async () => ({}));
+
+      await orchestrator.assignTasks(tasks);
+
+      assert.equal(claimMock.mock.calls[0].arguments[1], 'claude-code');
+    });
+
+    it('routes all tasks to the only available adapter regardless of type', async () => {
+      const orchestrator = new Orchestrator('/tmp/test');
+      const gemini = new GeminiAdapter();
+      orchestrator.adapters.set(gemini.name, gemini);
+
+      const tasks = [
+        { id: 'T1', title: 'Code Task', type: 'code' },
+        { id: 'T2', title: 'Refactor Task', type: 'refactor' }
+      ];
+      const claimMock = mock.method(orchestrator.taskManager, 'claimTask', async () => ({}));
+      mock.method(orchestrator.taskManager, 'updateStatus', async () => ({}));
+
+      await orchestrator.assignTasks(tasks);
+
+      const assignedAgents = claimMock.mock.calls.map(c => c.arguments[1]);
+      assert.deepEqual(assignedAgents, ['gemini', 'gemini']);
     });
   });
 

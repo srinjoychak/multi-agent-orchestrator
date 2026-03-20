@@ -9,7 +9,11 @@
   },
   "scripts": {
     "start": "node src/orchestrator/index.js",
+    "orchestrate": "node src/orchestrator/index.js",
+    "orchestrate:check": "node src/orchestrator/index.js --check-agents",
     "test": "node --test src/**/*.test.js tests/**/*.test.js",
+    "test:unit": "node --test src/**/*.test.js",
+    "test:integration": "node --test tests/**/*.test.js",
     "check-agents": "node src/adapters/check.js"
   },
   "keywords": [

@@ -19,6 +19,7 @@ export class AgentAdapter {
     this.name = name;
     this.command = command;
     this.timeoutMs = options.timeoutMs ?? 300_000;
+    this.capabilities = options.capabilities ?? [];
     this._process = null;
   }
 

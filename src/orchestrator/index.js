@@ -55,6 +55,11 @@ export class Orchestrator {
    * Initialize the orchestrator: check agents, create directories.
    */
   async initialize() {
+    console.log('');
+    console.log('╔══════════════════════════════════════╗');
+    console.log('║   Multi-Agent Orchestrator  v0.1.0   ║');
+    console.log('╚══════════════════════════════════════╝');
+    console.log('');
     console.log('Initializing orchestrator...');
 
     // Create directories
@@ -179,13 +184,37 @@ export class Orchestrator {
     const planner = this.adapters.values().next().value;
 
     const planPrompt = [
-      'You are a task planner. Break the following request into independent, parallelizable tasks.',
-      'Return ONLY a JSON array of task objects with "id", "title", "description", and "depends_on" fields.',
-      'Each task should be self-contained and workable by a single agent in its own directory.',
-      'Keep tasks focused — each should touch a different set of files.',
-      'Do not include any explanation, only the JSON array.',
+      'You are a senior engineering team lead. Decompose the following request into',
+      'a list of discrete, parallelizable tasks for a team of AI coding agents.',
       '',
-      `Request: ${userPrompt}`,
+      'RULES:',
+      '1. Return ONLY a valid JSON array — no prose, no markdown, no explanation.',
+      '2. Each task must be completable by one agent working alone in its own directory.',
+      '3. Tasks must NOT touch the same files — zero overlap in scope.',
+      '4. Express dependencies via "depends_on": ["T1"] — only block when truly necessary.',
+      '5. Each task must have a "type" field — choose ONE from:',
+      '   code, refactor, test, review, debug, research, docs, analysis',
+      '6. Keep tasks granular — max one concern per task.',
+      '',
+      'OUTPUT SCHEMA (strict):',
+      '[',
+      '  {',
+      '    "id": "T1",',
+      '    "title": "Short imperative title (max 60 chars)",',
+      '    "description": "Detailed description of exactly what to do and where",',
+      '    "type": "code",',
+      '    "depends_on": []',
+      '  }',
+      ']',
+      '',
+      'EXAMPLE for "add user auth to the API":',
+      '[',
+      '  {"id":"T1","title":"Add JWT auth middleware","description":"Create src/middleware/auth.js with JWT verify logic using jsonwebtoken","type":"code","depends_on":[]},',
+      '  {"id":"T2","title":"Protect API routes","description":"Update src/routes/*.js to apply auth middleware to all protected endpoints","type":"refactor","depends_on":["T1"]},',
+      '  {"id":"T3","title":"Write auth middleware tests","description":"Create tests/auth.test.js covering valid token, expired token, missing token cases","type":"test","depends_on":["T1"]}',
+      ']',
+      '',
+      `REQUEST: ${userPrompt}`,
     ].join('\n');
 
     const planTask = {
@@ -220,15 +249,30 @@ export class Orchestrator {
   }
 
   /**
-   * Assign tasks to agents using round-robin.
+   * Assign tasks to agents based on capability matching, falling back to round-robin.
    * @param {import('../types/index.js').Task[]} tasks
    */
   async assignTasks(tasks) {
     const agentNames = Array.from(this.adapters.keys());
+    let rrIndex = 0; // round-robin cursor for fallback
 
-    for (let i = 0; i < tasks.length; i++) {
-      const agentName = agentNames[i % agentNames.length];
-      const task = tasks[i];
+    for (const task of tasks) {
+      // Pick best adapter: first one whose capabilities include the task type
+      let agentName = null;
+      if (task.type) {
+        for (const [name, adapter] of this.adapters) {
+          if (adapter.capabilities.includes(task.type)) {
+            agentName = name;
+            break;
+          }
+        }
+      }
+
+      // Fallback: round-robin
+      if (!agentName) {
+        agentName = agentNames[rrIndex % agentNames.length];
+        rrIndex++;
+      }
 
       try {
         await this.taskManager.claimTask(task.id, agentName);
@@ -236,7 +280,8 @@ export class Orchestrator {
         await this.taskManager.updateStatus(task.id, 'in_progress', {
           worktree_branch: branchName,
         });
-        console.log(`  ${task.id}: "${task.title}" → ${agentName}`);
+        const routingNote = task.type ? `[${task.type}]` : '[round-robin]';
+        console.log(`  ${task.id}: "${task.title}" → ${agentName} ${routingNote}`);
       } catch (error) {
         console.error(`  Failed to assign ${task.id}: ${error.message}`);
       }
@@ -467,6 +512,11 @@ const args = process.argv.slice(2);
  * Main CLI handler
  */
 async function main() {
+  if (args.includes('--version') || args.includes('-v')) {
+    console.log('multi-agent-orchestrator v0.1.0');
+    process.exit(0);
+  }
+
   const orchestrator = new Orchestrator(process.cwd());
 
   if (args.includes('--tasks')) {

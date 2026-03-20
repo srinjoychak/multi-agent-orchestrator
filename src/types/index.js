@@ -7,6 +7,7 @@
  * @property {string} id - Unique task ID (e.g., "T1")
  * @property {string} title - Short task title
  * @property {string} description - Detailed task description / prompt
+ * @property {string} [type] - Task type hint for routing: 'code'|'refactor'|'test'|'review'|'debug'|'research'|'docs'|'analysis'
  * @property {TaskStatus} status
  * @property {string|null} assigned_to - Agent name or null
  * @property {string|null} claimed_at - ISO timestamp
@@ -82,6 +83,7 @@ export function createTask(overrides = {}) {
     id: overrides.id || `T${Date.now()}`,
     title: overrides.title || '',
     description: overrides.description || '',
+    type: overrides.type || null,
     status: 'pending',
     assigned_to: overrides.assigned_to || null,
     claimed_at: null,
