@@ -1,218 +1,298 @@
-# Multi-Agent Orchestrator
+# Multi-Agent Orchestrator — v1 Autonomous CLI
 
-**Vendor-neutral orchestrator that coordinates multiple AI coding CLIs (Claude Code, Gemini CLI) as a team — decomposing work, executing tasks in parallel git worktrees, and merging results.**
+> **Branch:** `archive/v1-autonomous-cli`
+> **Status:** Infrastructure verified (141 tests, 140 pass), end-to-end run pending — see `VERIFICATION_REPORT.md`
+> **Purpose:** Preserved autonomous CLI orchestrator. Phase 3 (chat-driven model) lives on `master`.
+
+---
+
+## What This Is
+
+A Node.js orchestrator that coordinates multiple AI coding CLI agents (Claude Code, Gemini CLI) as a development team. You give it a goal in natural language; it decomposes the work, assigns tasks to agents based on their capabilities, executes in parallel with dependency awareness, and merges all results back.
+
+**v1 model: fully autonomous.** One command, walk away, get a report.
+
+**Phase 3 model** (on `master`): the chat window is the Tech Lead — full step-by-step control with human-in-the-loop review. v1 infrastructure is fully reused.
 
 ---
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────┐
-│              User / CLI Interface                 │
-│         (node orchestrator.js "prompt")           │
-└──────────────────┬───────────────────────────────┘
-                   │
-┌──────────────────▼───────────────────────────────┐
-│              Orchestrator (Leader)                │
-│                                                   │
-│  ┌─────────────┐ ┌──────────────┐ ┌───────────┐ │
-│  │ Task Planner │ │ Task Manager │ │  Merger   │ │
-│  │ (decompose)  │ │ (assign/     │ │ (combine  │ │
-│  │              │ │  monitor)    │ │  results) │ │
-│  └─────────────┘ └──────────────┘ └───────────┘ │
-│                                                   │
-│  ┌──────────────────────────────────────────────┐ │
-│  │         Communication Layer (Comms)           │ │
-│  │    File-based IPC  ←→  (future: MQTT)        │ │
-│  └──────────────────────────────────────────────┘ │
-└──────────┬──────────────────┬────────────────────┘
-           │ spawns           │ spawns
-     ┌─────▼─────┐     ┌─────▼─────┐
-     │  Adapter   │     │  Adapter   │
-     │  Claude    │     │  Gemini    │
-     │  Code      │     │  CLI       │
-     └─────┬─────┘     └─────┬─────┘
-           │                  │
-     ┌─────▼─────┐     ┌─────▼─────┐
-     │ git        │     │ git        │
-     │ worktree   │     │ worktree   │
-     │ branch-1   │     │ branch-2   │
-     └───────────┘     └───────────┘
+┌─────────────────────────────────────────────────────┐
+│                  User / Terminal                     │
+│     node src/orchestrator/index.js "your goal"      │
+└──────────────────────┬──────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────┐
+│                   Orchestrator                       │
+│                                                      │
+│  1. decomposeTasks()  — planner agent breaks down    │
+│                         prompt into typed task list  │
+│  2. assignTasks()     — capability routing +         │
+│                         round-robin fallback         │
+│  3. executeTasks()    — wave-based parallel exec     │
+│                         with dispatched Set guard    │
+│  4. monitorUntilComplete() — stale claim recovery   │
+│  5. mergeAll()        — git branch integration       │
+│  6. generateReport()  — audit trail + summary        │
+└───────┬──────────────────────┬───────────────────────┘
+        │                      │
+        ▼                      ▼
+┌───────────────┐    ┌─────────────────┐
+│ ClaudeCode    │    │ Gemini          │
+│ Adapter       │    │ Adapter         │
+│               │    │                 │
+│ claude -p     │    │ gemini -p       │
+│ --output-     │    │ --output-format │
+│ format json   │    │ json --yolo     │
+│ --no-session- │    │                 │
+│ persistence   │    │                 │
+└───────┬───────┘    └────────┬────────┘
+        │                     │
+        └──────────┬──────────┘
+                   ▼
+┌─────────────────────────────────────────────────────┐
+│              Shared Infrastructure                   │
+│                                                      │
+│  TaskManager      tasks.json + file locking          │
+│  FileCommChannel  inbox-based agent messaging        │
+│  ResultMerger     git worktree merge + reporting     │
+│  Types            shared schemas + state machine     │
+└─────────────────────────────────────────────────────┘
+
+Runtime state (gitignored):
+  .agent-team/
+    tasks.json       ← live task list with locking
+    results/         ← per-task result JSON
+    report.json      ← final run report
+  .worktrees/        ← isolated git worktrees per agent
+```
+
+### Source Layout
+
+```
+src/
+  adapters/
+    base.js           AgentAdapter base class
+    claude-code.js    Claude Code CLI adapter
+    gemini.js         Gemini CLI adapter
+    check.js          CLI availability checker
+  taskmanager/
+    index.js          Task state machine + file locking
+  comms/
+    channel.js        CommChannel interface
+    file-channel.js   File-based inbox/outbox
+  merger/
+    index.js          Git merge + conflict detection + report
+  orchestrator/
+    index.js          Main pipeline + CLI entry point
+  types/
+    index.js          JSDoc typedefs, state machine constants
+
+tests/
+  integration/        Real CLI tests (skip-guarded)
+    helpers.js
+    adapter.integration.test.js
+    taskmanager.integration.test.js
 ```
 
 ---
 
-## Quick Start
+## Task State Machine
+
+```
+pending ──► claimed ──► in_progress ──► done
+               │                  └──► failed ──► pending (retry ≤ max_retries)
+               └──► pending (unclaim)
+```
+
+Tasks with `depends_on` that fail cascade: dependents are immediately marked `failed` without executing.
+
+---
+
+## Capability-Based Agent Routing
+
+| Agent | Capabilities | CLI flags |
+|-------|-------------|-----------|
+| `claude-code` | `code` `refactor` `test` `review` `debug` | `--output-format json --no-session-persistence` |
+| `gemini` | `research` `docs` `analysis` `code` `test` | `--output-format json --yolo` |
+
+`assignTasks()` matches task `type` to the first capable adapter. Falls back to round-robin for unknown types or tasks with no `type`.
+
+Task types: `code` `refactor` `test` `review` `debug` `research` `docs` `analysis`
+
+---
+
+## Adapter Output Schemas (validated against real CLI invocations)
+
+**Claude Code** (`--output-format json`):
+```json
+{ "type": "result", "is_error": false, "result": "response text", "duration_ms": 1139 }
+```
+Status determined by `is_error`. Text from `result` field.
+
+**Gemini** (`--output-format json`):
+```json
+{ "session_id": "...", "response": "response text", "stats": { "models": { ... } } }
+```
+Text from `response` field. No native error field — failures surface as exceptions.
+
+`filesChanged` is detected via `git diff --name-only HEAD` in the worktree post-execution (not from CLI JSON output).
+
+---
+
+## Setup
 
 ### Prerequisites
 
-- **Node.js 20+** — [nodejs.org](https://nodejs.org)
-- **Git 2.5+** — for worktree support
-- At least one AI CLI agent:
-  - **Claude Code**: `npm i -g @anthropic-ai/claude-code` and authenticate
-  - **Gemini CLI**: `npm i -g @google/gemini-cli` and authenticate
-
-See [docs/SETUP.md](docs/SETUP.md) for full installation instructions.
+- Node.js 18+
+- Git 2.5+ (worktree support)
+- `claude` CLI — `npm i -g @anthropic-ai/claude-code` then authenticate
+- `gemini` CLI — `npm i -g @google/gemini-cli` then authenticate
 
 ### Install
 
 ```bash
-git clone <this-repo>
-cd copilot_adapter
-npm install
+git clone https://github.com/srinjoychak/multi-agent-orchestrator
+cd multi-agent-orchestrator
+git checkout archive/v1-autonomous-cli
+# no npm install needed — zero dependencies, Node.js built-ins only
 ```
 
-### Verify agents
+### Verify CLIs
 
 ```bash
-npm run check-agents
+npm run orchestrate:check
 ```
 
-### First run
+---
+
+## Usage
+
+### Natural language prompt
 
 ```bash
-node src/orchestrator/index.js "Build a REST API with user authentication and unit tests"
+npm run orchestrate "Build a REST API with JWT auth and unit tests"
+# or
+node src/orchestrator/index.js "Build a REST API with JWT auth and unit tests"
 ```
 
----
-
-## Usage Examples
+### Pre-defined tasks file
 
 ```bash
-# Decompose and implement a feature with both agents in parallel
-node src/orchestrator/index.js "Add a user profile page with avatar upload and settings form"
-
-# Security + performance audit split across agents
-node src/orchestrator/index.js "Review src/ for security vulnerabilities and performance bottlenecks"
-
-# Multi-file refactor coordinated across worktrees
-node src/orchestrator/index.js "Migrate the codebase from CommonJS to ES modules"
-
-# Check which agents are available before running
-node src/orchestrator/index.js --check-agents
+node src/orchestrator/index.js --tasks my-tasks.json
 ```
 
----
-
-## How It Works
-
-The orchestrator runs a **6-step pipeline** for every prompt:
-
-| Step | Name | What happens |
-|------|------|--------------|
-| 1 | **Decompose** | The first available agent analyzes the prompt and returns a JSON array of independent tasks |
-| 2 | **Assign** | Tasks are assigned to agents in round-robin order (e.g., T1 → claude-code, T2 → gemini, T3 → claude-code) |
-| 3 | **Worktree** | A dedicated `git worktree` is created per task, giving each agent a physically isolated working directory on a fresh branch |
-| 4 | **Execute** | All tasks run concurrently via `Promise.all`; each agent receives a structured prompt and works in its worktree |
-| 5 | **Merge** | Completed branches are merged back to main with `git merge --no-ff`; conflicts are detected and reported — never silently overwritten |
-| 6 | **Report** | A summary is printed to stdout and written to `.agent-team/report.json` |
-
----
-
-## Configuration
-
-Options are passed to the `Orchestrator` constructor in code, or set via environment before running:
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `pollIntervalMs` | `2000` | How often (ms) the orchestrator polls task status |
-| `taskTimeoutMs` | `300000` | Per-task timeout in ms (5 minutes); the agent process is killed on breach |
-
-### Programmatic usage
-
-```js
-import { Orchestrator } from './src/orchestrator/index.js';
-
-const orchestrator = new Orchestrator('/path/to/your/project', {
-  pollIntervalMs: 5000,   // poll every 5s
-  taskTimeoutMs: 600_000, // 10-minute timeout per task
-});
-
-await orchestrator.initialize();
-await orchestrator.run('Your task description here');
-```
-
-### Adding agents at runtime
-
-The orchestrator auto-detects available CLIs on startup. If both `claude` and `gemini` are in `PATH`, both adapters activate automatically. Install or remove CLIs to change the active agent pool without touching configuration files.
-
----
-
-## Adding a New Adapter
-
-See the full guide at [docs/ADDING_ADAPTERS.md](docs/ADDING_ADAPTERS.md). The short version:
-
-1. Create `src/adapters/your-agent.js` extending `AgentAdapter`
-2. Implement `buildArgs(task, context)` and `parseOutput(stdout, stderr, duration_ms)`
-3. Register the adapter in `src/orchestrator/index.js`
-
-```js
-// Minimal skeleton
-import { AgentAdapter } from './base.js';
-
-export class YourAgentAdapter extends AgentAdapter {
-  constructor(options = {}) {
-    super('your-agent', 'your-cli-command', options);
+**tasks.json format:**
+```json
+[
+  {
+    "id": "T1",
+    "title": "Scaffold Express app",
+    "description": "Create src/app.js with Express setup and route structure",
+    "type": "code",
+    "depends_on": []
+  },
+  {
+    "id": "T2",
+    "title": "Add JWT middleware",
+    "description": "Create src/middleware/auth.js with JWT verify logic",
+    "type": "code",
+    "depends_on": ["T1"]
+  },
+  {
+    "id": "T3",
+    "title": "Write auth tests",
+    "description": "Create tests/auth.test.js covering valid/expired/missing token",
+    "type": "test",
+    "depends_on": ["T2"]
   }
+]
+```
 
-  buildArgs(task, context) {
-    return ['-p', task.description, '--output-format', 'json'];
-  }
+### Other commands
 
-  parseOutput(stdout, stderr, duration_ms) {
-    return { status: 'done', summary: stdout, filesChanged: [], output: stdout, duration_ms };
-  }
-}
+```bash
+node src/orchestrator/index.js --version        # v0.1.0
+node src/orchestrator/index.js --check-agents   # probe CLIs
+node src/orchestrator/index.js --help
+```
+
+### npm scripts
+
+```bash
+npm run orchestrate           # run with a prompt
+npm run orchestrate:check     # check agent availability
+npm test                      # all tests (unit + integration)
+npm run test:unit             # unit tests only
+npm run test:integration      # integration tests (requires CLIs)
 ```
 
 ---
 
-## Comparison
+## Known Limitations
 
-| Feature | **This project** | MCO | AWS CAO |
-|---------|-----------------|-----|---------|
-| Primary focus | Task decomposition + parallel implementation | Code review aggregation | Hierarchical session management |
-| Isolation mechanism | **Git worktrees** | None stated | tmux sessions |
-| Language | Node.js | Node.js | Python |
-| Infrastructure required | None | None | tmux 3.3+ |
-| Communication layer | File-based (MQTT-ready) | Not abstracted | Session-based |
-| Agents supported | Claude Code, Gemini | Claude, Codex, Gemini, OpenCode, Qwen | Kiro, Claude, Codex, Gemini, Kimi, Copilot |
-| Conflict detection | Yes — git merge | N/A | N/A |
-| A2A protocol roadmap | v2 | No | No |
-| Stars (as of research) | — | ~215 | ~333 |
+1. **End-to-end not production-verified** — all unit and integration tests pass; full autonomous run with a real prompt is pending. See `VERIFICATION_REPORT.md`.
+2. **Conflict resolution is manual** — merge conflicts are detected and reported, not resolved.
+3. **No human-in-the-loop** — fully autonomous; there is no pause point to review the task plan before execution.
+4. **Planner always uses first adapter** — `decomposeTasks()` picks the first registered adapter (claude-code). Not configurable.
+5. **Shared capabilities cause routing bias** — both agents have `code` and `test`; claude-code is registered first so it always wins those types.
+6. **No session recovery** — mid-run crashes leave worktrees open. `resetStaleClaims()` recovers task state after 10 min but does not recover worktree output.
 
 ---
 
-## MQTT Roadmap (v2)
-
-The communication layer (`CommChannel`) is designed to be swapped without touching orchestrator or adapter code. The v1 file-based transport (`FileCommChannel`) will be replaced with `MqttCommChannel` (Mosquitto) in v2 when:
-
-- Agents need to run on different machines or containers
-- Real-time event streaming with sub-10ms latency is required
-- Team size exceeds 5 concurrent agents
-
-Planned MQTT topic structure:
+## Test Suite
 
 ```
-team/{team-id}/tasks/created       # new tasks from leader
-team/{team-id}/tasks/claimed       # agent claiming a task
-team/{team-id}/tasks/status        # status updates
-team/{team-id}/agent/{name}/inbox  # directed messages
-team/{team-id}/broadcast           # all agents subscribe
-team/{team-id}/heartbeat           # liveness (retain=true)
+141 tests | 140 pass | 1 skip
 ```
+
+```bash
+npm test
+```
+
+| Module | Tests |
+|--------|-------|
+| TaskManager | State machine, locking, retry, stale claims, dependency blocking |
+| FileCommChannel | Send, receive, peek, broadcast, subscribe, consume-once |
+| Types | createTask defaults, isValidTransition, VALID_TRANSITIONS |
+| AgentAdapter (base) | isAvailable, execute, timeout handling, error handling |
+| ClaudeCodeAdapter | buildArgs, parseOutput (all JSON shapes), is_error detection |
+| GeminiAdapter | buildArgs, parseOutput, newline-delimited JSON, fallback |
+| ResultMerger | collectResults, mergeBranch, mergeAll, conflict detection, report |
+| Orchestrator | initialize, decompose, capability routing (5 cases), wave execution, review, loadTasksFromFile |
+| Integration | Real CLI invocations, full TaskManager lifecycle (skip-guarded) |
 
 ---
 
-## Contributing
+## How This Was Built
 
-1. Fork and clone the repo
-2. `npm install`
-3. Run `npm run check-agents` to verify your environment
-4. Make changes; keep ES module syntax (`import`/`export`)
-5. Run `npm test` before submitting a PR
-6. All task mutations must go through `TaskManager` — never write `tasks.json` directly
-7. New adapters must implement the `AgentAdapter` interface from `src/adapters/base.js`
+Developed collaboratively by **Claude Sonnet 4.6** (Tech Lead) and **Gemini CLI** (Dev Agent):
+
+| PR | What landed | Authors |
+|----|-------------|---------|
+| #1 | Core scaffold: TaskManager, FileCommChannel, Types — 80 tests | Claude |
+| #2 | Real CLI schema validation, adapter fixes, dependency orchestration, full test suite — 129 tests | Claude + Gemini |
+| #3 | Phase 1 fixes: resultsDir init, stale claim wiring, dispatch dedup, safe error handling — 135 tests | Gemini / Claude review |
+| #4 | Phase 2 quality: capability routing, enriched decomposition prompt, DX polish — 141 tests | Gemini / Claude review |
+
+Full decision log: `DEVELOPMENT_HISTORY.md`
+
+---
+
+## What Comes Next — Phase 3
+
+Phase 3 (on `master`) changes the interface model:
+
+- **Chat session = Tech Lead** — Claude Code (or any AI CLI) drives orchestration step-by-step from the chat window
+- **Discrete verbs** — `decompose`, `assign`, `execute`, `accept`, `reject`, `merge`, `status`
+- **Review loop** — Tech Lead reads each result inline, accepts or reinvokes agent with feedback
+- **`agents.json`** — role config replaces hardcoded capabilities; swappable per project
+- **Gateway-agnostic** — tomorrow the driver can be Gemini CLI, Copilot, Codex — same infrastructure
+
+All v1 infrastructure (adapters, TaskManager, merger, comms) is reused unchanged.
 
 ---
 
