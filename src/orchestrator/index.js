@@ -276,7 +276,7 @@ export class Orchestrator {
         // Refresh after assignment
         const refreshed = await this.taskManager.getTasks();
         const newlyInProgress = refreshed.filter(
-          (t) => readyTasks.some((r) => r.id === t.id) && !dispatched.has(t.id),
+          (t) => readyTasks.some((r) => r.id === t.id) && t.status === 'in_progress' && !dispatched.has(t.id),
         );
         tasksToRun.push(...newlyInProgress);
       }

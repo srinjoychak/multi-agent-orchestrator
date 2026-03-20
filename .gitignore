@@ -6,7 +6,3 @@ node_modules/
 
 # Agent task coordination files
 *-tasks.md
-
-# Ensure agent runtime dirs are fully ignored
-.agent-team/
-.worktrees/
