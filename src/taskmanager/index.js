@@ -210,7 +210,7 @@ export class TaskManager {
       claimed: tasks.filter((t) => t.status === 'claimed').length,
       in_progress: tasks.filter((t) => t.status === 'in_progress').length,
       done: tasks.filter((t) => t.status === 'done').length,
-      failed: tasks.filter((t) => t.status === 'failed' && t.retries >= t.max_retries).length,
+      failed: tasks.filter((t) => t.status === 'failed').length,
     };
   }
 
