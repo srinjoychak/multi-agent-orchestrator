@@ -35,7 +35,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
    */
   buildArgs(task, context) {
     const prompt = this._buildPrompt(task, context);
-    return [
+    const args = [
       '-p', prompt,
       '--output-format', 'json',
       '--no-session-persistence',
@@ -43,6 +43,9 @@ export class ClaudeCodeAdapter extends AgentAdapter {
       // Safe because each task runs in its own git worktree branch.
       '--dangerously-skip-permissions',
     ];
+    const model = this.getModel(task.type);
+    if (model) args.push('--model', model);
+    return args;
   }
 
   /**

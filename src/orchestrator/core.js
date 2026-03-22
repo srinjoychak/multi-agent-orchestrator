@@ -78,17 +78,13 @@ export class Orchestrator {
 
     // Detect and register available adapters
     const candidates = [
-      new ClaudeCodeAdapter({ timeoutMs: this.taskTimeoutMs }),
-      new GeminiAdapter({ timeoutMs: this.taskTimeoutMs }),
+      new ClaudeCodeAdapter({ timeoutMs: this.taskTimeoutMs, agentConfig: agentsConfig['claude-code'] }),
+      new GeminiAdapter({ timeoutMs: this.taskTimeoutMs, agentConfig: agentsConfig['gemini'] }),
     ];
 
     for (const adapter of candidates) {
       const available = await adapter.isAvailable();
       if (available) {
-        // Apply capability overrides from agents.json
-        if (agentsConfig[adapter.name]?.capabilities) {
-          adapter.capabilities = agentsConfig[adapter.name].capabilities;
-        }
         this.adapters.set(adapter.name, adapter);
         if (!options.quiet) console.log(`  [+] ${adapter.name} — available`);
       } else {

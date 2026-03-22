@@ -35,7 +35,10 @@ export class GeminiAdapter extends AgentAdapter {
   buildArgs(task, context) {
     const prompt = this._buildPrompt(task, context);
     // --yolo: auto-approve all tool actions (required for non-interactive agent use)
-    return ['-p', prompt, '--output-format', 'json', '--yolo'];
+    const args = ['-p', prompt, '--output-format', 'json', '--yolo'];
+    const model = this.getModel(task.type);
+    if (model) args.push('--model', model);
+    return args;
   }
 
   /**
