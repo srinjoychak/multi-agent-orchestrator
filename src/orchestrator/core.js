@@ -214,8 +214,13 @@ export class Orchestrator {
     const result = await planner.execute(planTask, context);
 
     try {
+      const VALID_TYPES = new Set(['code', 'refactor', 'test', 'review', 'debug', 'research', 'docs', 'analysis']);
       const parsed = this._extractJsonArray(result.summary || result.output);
-      return this.taskManager.addTasks(parsed);
+      const normalised = parsed.map((t) => ({
+        ...t,
+        type: VALID_TYPES.has(t.type) ? t.type : 'code',
+      }));
+      return this.taskManager.addTasks(normalised);
     } catch {
       console.error('Failed to parse task plan. Creating single task.');
       const task = await this.taskManager.addTask({

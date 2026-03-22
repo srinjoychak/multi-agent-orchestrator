@@ -1,69 +1,43 @@
-# Multi-Agent Orchestrator — Project Instructions
+# Task Context — PLAN
 
-## What This Project Is
+**Agent:** claude-code
+**Task:** Decompose user request into tasks
+**Branch:** main
 
-A Node.js orchestrator that coordinates multiple AI coding CLI agents (Claude Code,
-Gemini CLI) working as a team. Each agent operates through a standardized adapter,
-works in an isolated git worktree, and communicates via file-based messaging.
+## Objective
+You are a senior engineering team lead. Decompose the following request into
+a list of discrete, parallelizable tasks for a team of AI coding agents.
 
-## Architecture
+RULES:
+1. Return ONLY a valid JSON array — no prose, no markdown, no explanation.
+2. Each task must be completable by one agent working alone in its own directory.
+3. Tasks must NOT touch the same files — zero overlap in scope.
+4. Express dependencies via "depends_on": ["T1"] — only block when truly necessary.
+5. Each task must have a "type" field — choose ONE from:
+   code, refactor, test, review, debug, research, docs, analysis
+6. Keep tasks granular — max one concern per task.
 
-- `src/orchestrator/` — Leader logic: decompose tasks, assign, monitor, merge
-- `src/adapters/` — One adapter per CLI agent (base.js, claude-code.js, gemini.js)
-- `src/taskmanager/` — Shared task list (tasks.json) with file locking
-- `src/comms/` — Inter-agent communication (file-based for v1)
-- `src/merger/` — Git branch merge + result aggregation
-- `src/types/` — Shared schemas and type definitions
-- `.agent-team/` — Runtime state directory (gitignored)
+OUTPUT SCHEMA (strict):
+[
+  {
+    "id": "T1",
+    "title": "Short imperative title (max 60 chars)",
+    "description": "Detailed description of exactly what to do and where",
+    "type": "code",
+    "depends_on": []
+  }
+]
 
-## Key Rules
+EXAMPLE for "add user auth to the API":
+[
+  {"id":"T1","title":"Add JWT auth middleware","description":"Create src/middleware/auth.js with JWT verify logic using jsonwebtoken","type":"code","depends_on":[]},
+  {"id":"T2","title":"Protect API routes","description":"Update src/routes/*.js to apply auth middleware to all protected endpoints","type":"refactor","depends_on":["T1"]},
+  {"id":"T3","title":"Write auth middleware tests","description":"Create tests/auth.test.js covering valid token, expired token, missing token cases","type":"test","depends_on":["T1"]}
+]
 
-1. **Adapters must implement the AgentAdapter interface** defined in `src/adapters/base.js`
-2. **All task mutations go through TaskManager** — never write tasks.json directly
-3. **Agents work in git worktrees** — never modify files in the main working directory
-4. **Communication uses CommChannel interface** — never write to inbox directories directly
-5. **File locking is mandatory** for any shared state mutation (tasks.json)
+REQUEST: Write a file called docs/gemini-verified.md containing a markdown table comparing Jest, Vitest, and Node's built-in test runner across: speed, zero-config setup, and TypeScript support. Use your own knowledge — no web search needed.
 
-## CLI Invocation Patterns
-
-```bash
-# Claude Code (non-interactive, structured output)
-claude -p "prompt here" --output-format json
-
-# Gemini CLI (non-interactive, structured output)
-gemini -p "prompt here" --output-format json
-```
-
-## Testing
-
-Run tests with: `npm test`
-Integration tests require both `claude` and `gemini` CLIs in PATH.
-
-## Style
-
-- ES modules (`import`/`export`)
-- No TypeScript (plain JS with JSDoc types for v1)
-- Minimal dependencies
-- Errors should be descriptive and include context (which agent, which task)
-
-## Tech Lead Identity
-
-When acting as Tech Lead (e.g., reviewing PRs, writing review comments, or providing
-architectural guidance), always sign off as:
-
-```
-— Claude Sonnet 4.6 (Tech Lead)
-```
-
-This applies to:
-- PR review comments
-- Inline code review feedback
-- Architectural decision records or notes left for the team
-
-## Workflow Conventions
-
-- **Branch naming**: `agent/claude-code/T<n>` for Claude Code agent worktrees
-- **PR target**: Always open PRs against `master`
-- **Worktree isolation**: Each task runs in its own git worktree under `.worktrees/`
-- **No direct main edits**: Changes to shared state (tasks.json, agents.json) must use
-  the TaskManager API or go through the designated file-locking utilities
+## Constraints
+- Work only within: D:\ALL_AUTOMATION\copilot_adapter
+- Do NOT modify files outside this worktree.
+- Do NOT use save_memory or write to global config files.

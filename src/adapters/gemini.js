@@ -72,9 +72,12 @@ export class GeminiAdapter extends AgentAdapter {
 
     parts.push(
       '',
+      'IMPORTANT: You must write output to a file. Do not just describe what you plan to do.',
+      'Use your write_file tool to create or update files in your working directory.',
+      '',
       'Constraints:',
       '- Only modify files within your assigned working directory.',
-      '- When done, provide a brief summary of what you changed.',
+      '- When done, provide a brief summary of what files you created or changed.',
     );
 
     return parts.join('\n');
@@ -176,13 +179,20 @@ export class GeminiAdapter extends AgentAdapter {
    */
   async _getChangedFiles(workDir) {
     try {
+      // Use `git status --porcelain` to capture both modified tracked files
+      // and newly created (untracked) files. `git diff --name-only HEAD` misses
+      // untracked files, which is the common case when an agent writes new files
+      // in a fresh worktree with no prior commits.
       const { stdout } = await platformExec(
         execFileAsync,
         'git',
-        ['diff', '--name-only', 'HEAD'],
+        ['status', '--porcelain'],
         { cwd: workDir, timeout: 5_000 },
       );
-      return stdout.split('\n').map((f) => f.trim()).filter(Boolean);
+      return stdout
+        .split('\n')
+        .map((line) => line.slice(3).trim())  // strip 2-char status code + space
+        .filter(Boolean);
     } catch {
       return [];
     }
