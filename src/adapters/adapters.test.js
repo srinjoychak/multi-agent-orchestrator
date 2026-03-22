@@ -111,7 +111,7 @@ describe('GeminiAdapter', () => {
         adapter._buildPrompt(task, context),
         '--output-format',
         'json',
-        '--yolo',
+        '--approval-mode=yolo',
       ]);
     });
   });
