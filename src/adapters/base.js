@@ -15,13 +15,29 @@ export class AgentAdapter {
    * @param {string} command - CLI command name (e.g., "claude", "gemini")
    * @param {Object} options
    * @param {number} [options.timeoutMs=300000] - Execution timeout (5 min default)
+   * @param {Object} [options.agentConfig={}] - Agent config block from agents.json
    */
   constructor(name, command, options = {}) {
     this.name = name;
     this.command = command;
     this.timeoutMs = options.timeoutMs ?? 300_000;
-    this.capabilities = options.capabilities ?? [];
+    this.agentConfig = options.agentConfig ?? {};
+    // agentConfig.capabilities (from agents.json) takes priority over subclass defaults
+    this.capabilities = this.agentConfig.capabilities ?? options.capabilities ?? [];
     this._process = null;
+  }
+
+  /**
+   * Resolve the model to use for a given task type.
+   * Looks up agentConfig.models[taskType], falls back to models.default.
+   * Returns undefined when no model config is present.
+   * @param {string|null|undefined} taskType
+   * @returns {string|undefined}
+   */
+  getModel(taskType) {
+    const models = this.agentConfig.models;
+    if (!models) return undefined;
+    return (taskType && models[taskType]) || models.default;
   }
 
   /**
