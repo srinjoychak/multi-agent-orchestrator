@@ -332,6 +332,7 @@ export class Orchestrator {
         console.log(`  Wave: starting tasks [${ids}]`);
         tasksToRun.forEach((t) => dispatched.add(t.id));
         await Promise.all(tasksToRun.map((task) => this._runTask(task)));
+        tasksToRun.forEach((t) => dispatched.delete(t.id));
       } else {
         const summary = await this.taskManager.getSummary();
         console.log(
