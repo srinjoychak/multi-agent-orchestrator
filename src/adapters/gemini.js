@@ -52,13 +52,20 @@ export class GeminiAdapter extends AgentAdapter {
       ? `\nNOTE: This task has failed ${task.retries} time(s) before. Previous attempts did not write files. You MUST write files this time.\n`
       : '';
 
-    return [
+    const parts = [
       `Task: ${task.title}`,
       '',
       task.description,
       retryNote,
       `Working directory: ${context.workDir}`,
       `Branch: ${context.branch}`,
+    ];
+
+    if (context.agentContext) {
+      parts.push('', '## Worktree Context', context.agentContext);
+    }
+
+    parts.push(
       '',
       'RULES — read these carefully before doing anything:',
       '1. Your FIRST action must be to write or edit the required files. Do not spend time reading files unless the task explicitly requires it to determine what to write.',
@@ -67,7 +74,9 @@ export class GeminiAdapter extends AgentAdapter {
       '4. Do NOT delegate to a subagent. You must write the files yourself.',
       '5. Only modify files that are directly required by this task.',
       '6. When all required files are written, provide a brief summary: which files you changed and what you changed.',
-    ].join('\n');
+    );
+
+    return parts.join('\n');
   }
 
   /**

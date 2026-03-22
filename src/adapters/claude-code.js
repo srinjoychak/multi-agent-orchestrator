@@ -55,20 +55,29 @@ export class ClaudeCodeAdapter extends AgentAdapter {
    * @returns {string}
    */
   _buildPrompt(task, context) {
-    return [
+    const parts = [
       `Task: ${task.title}`,
       '',
       task.description,
       '',
       `Working directory: ${context.workDir}`,
       `Branch: ${context.branch}`,
+    ];
+
+    if (context.agentContext) {
+      parts.push('', '## Worktree Context', context.agentContext);
+    }
+
+    parts.push(
       '',
       'Instructions:',
       '- Complete the task described above.',
       '- Only modify files relevant to this task.',
       '- Do not modify files outside the scope of this task.',
       '- When done, provide a summary of changes made.',
-    ].join('\n');
+    );
+
+    return parts.join('\n');
   }
 
   /**
