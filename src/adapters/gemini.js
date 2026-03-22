@@ -118,23 +118,13 @@ export class GeminiAdapter extends AgentAdapter {
       };
     }
 
-    try {
-      // Handle newline-delimited JSON (stream format)
-      if (trimmed.includes('\n')) {
-        const lines = trimmed.split('\n').filter(Boolean);
-        const lastLine = lines[lines.length - 1];
-        const parsed = JSON.parse(lastLine);
-        return {
-          status: 'done',
-          summary: this._extractResultText(parsed) || lastLine.slice(0, 500),
-          filesChanged: [],
-          output: stdout,
-          duration_ms,
-        };
-      }
-
-      // Handle single JSON object
-      const parsed = JSON.parse(trimmed);
+    // Try to parse the full output as JSON first.
+    // Gemini CLI --output-format json may emit pretty-printed JSON (multi-line),
+    // so splitting by '\n' and taking the last line is incorrect — the last line
+    // is often just '}' which fails JSON.parse. Parsing the whole trimmed string
+    // handles both single-line and pretty-printed output correctly.
+    const parsed = this._tryParseJson(trimmed);
+    if (parsed !== null) {
       return {
         status: 'done',
         summary: this._extractResultText(parsed) || trimmed.slice(0, 500),
@@ -142,16 +132,51 @@ export class GeminiAdapter extends AgentAdapter {
         output: stdout,
         duration_ms,
       };
-    } catch {
-      // Fallback: treat as plain text
-      return {
-        status: 'done',
-        summary: trimmed.slice(0, 500),
-        filesChanged: [],
-        output: stdout,
-        duration_ms,
-      };
     }
+
+    // No valid JSON found — Gemini produced plain text or a monologue.
+    // Do NOT silently mark as done; surface this as a failure so the task
+    // can be retried rather than accepted as successful with no file output.
+    return {
+      status: 'failed',
+      summary: `Gemini produced no parseable JSON output. Raw output: ${trimmed.slice(0, 500)}`,
+      filesChanged: [],
+      output: stdout,
+      duration_ms,
+    };
+  }
+
+  /**
+   * Attempt to parse a string as JSON, returning the parsed value or null.
+   *
+   * Tries three strategies in order:
+   * 1. Parse the full string (handles both single-line and pretty-printed JSON).
+   * 2. Scan lines from the end (handles NDJSON/streaming where each line is a JSON object).
+   * 3. Extract the outermost {...} block (handles JSON with surrounding noise).
+   *
+   * @param {string} text
+   * @returns {any|null}
+   */
+  _tryParseJson(text) {
+    // Strategy 1: full string — handles single-line and pretty-printed JSON
+    try { return JSON.parse(text); } catch { /* fall through */ }
+
+    // Strategy 2: NDJSON/streaming — scan lines from end, return first valid JSON line
+    if (text.includes('\n')) {
+      const lines = text.split('\n').filter(Boolean);
+      for (let i = lines.length - 1; i >= 0; i--) {
+        try { return JSON.parse(lines[i]); } catch { /* try next */ }
+      }
+    }
+
+    // Strategy 3: extract outermost {...} block (handles surrounding noise)
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start !== -1 && end > start) {
+      try { return JSON.parse(text.slice(start, end + 1)); } catch { /* fall through */ }
+    }
+
+    return null;
   }
 
   /**

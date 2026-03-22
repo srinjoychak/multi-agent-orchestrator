@@ -175,11 +175,11 @@ describe('GeminiAdapter', () => {
       assert.equal(res.summary, 'Final answer');
     });
 
-    it('handles plain text fallback', () => {
+    it('marks as failed when output is plain text (Gemini monologue, no JSON)', () => {
       const stdout = 'Just some text';
       const res = adapter.parseOutput(stdout, '', duration);
-      assert.equal(res.status, 'done');
-      assert.equal(res.summary, 'Just some text');
+      assert.equal(res.status, 'failed');
+      assert.ok(res.summary.includes('Just some text'));
     });
   });
 
