@@ -251,6 +251,56 @@ describe('CLI verb router (index.js)', () => {
     await assert.rejects(() => main(), /reject requires a task ID/);
   });
 
+  // ── reset ─────────────────────────────────────────────────────────────────────
+
+  it('reset verb calls stepReset with hard=false', async () => {
+    const stub = mock.method(_handlers, 'stepReset', async () => {});
+
+    setArgv('reset');
+    await main();
+
+    assert.equal(stub.mock.callCount(), 1);
+    const [root, hard] = stub.mock.calls[0].arguments;
+    assert.equal(typeof root, 'string');
+    assert.equal(hard, false);
+  });
+
+  it('reset --hard calls stepReset with hard=true', async () => {
+    const stub = mock.method(_handlers, 'stepReset', async () => {});
+
+    setArgv('reset', '--hard');
+    await main();
+
+    assert.equal(stub.mock.callCount(), 1);
+    const [, hard] = stub.mock.calls[0].arguments;
+    assert.equal(hard, true);
+  });
+
+  // ── review ────────────────────────────────────────────────────────────────────
+
+  it('review verb calls stepReview with no taskId', async () => {
+    const stub = mock.method(_handlers, 'stepReview', async () => {});
+
+    setArgv('review');
+    await main();
+
+    assert.equal(stub.mock.callCount(), 1);
+    const [root, taskId] = stub.mock.calls[0].arguments;
+    assert.equal(typeof root, 'string');
+    assert.equal(taskId, undefined);
+  });
+
+  it('review T1 calls stepReview with taskId T1', async () => {
+    const stub = mock.method(_handlers, 'stepReview', async () => {});
+
+    setArgv('review', 'T1');
+    await main();
+
+    assert.equal(stub.mock.callCount(), 1);
+    const [, taskId] = stub.mock.calls[0].arguments;
+    assert.equal(taskId, 'T1');
+  });
+
   // ── merge ─────────────────────────────────────────────────────────────────────
 
   it('merge verb calls stepMerge with no taskId', async () => {
