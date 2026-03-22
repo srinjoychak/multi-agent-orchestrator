@@ -8,7 +8,7 @@ const execFileAsync = promisify(execFile);
 /**
  * Adapter for Gemini CLI.
  *
- * Invokes: gemini -p "<prompt>" --output-format json --yolo
+ * Invokes: gemini -p "<prompt>" --output-format json --approval-mode=yolo
  * Works in the assigned git worktree directory.
  *
  * Real JSON output schema (--output-format json):
@@ -34,8 +34,8 @@ export class GeminiAdapter extends AgentAdapter {
    */
   buildArgs(task, context) {
     const prompt = this._buildPrompt(task, context);
-    // --yolo: auto-approve all tool actions (required for non-interactive agent use)
-    return ['-p', prompt, '--output-format', 'json', '--yolo'];
+    // --approval-mode=yolo: auto-approve all tool actions (required for non-interactive agent use)
+    return ['-p', prompt, '--output-format', 'json', '--approval-mode=yolo'];
   }
 
   /**
