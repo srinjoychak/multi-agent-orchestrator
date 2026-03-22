@@ -45,3 +45,25 @@ Integration tests require both `claude` and `gemini` CLIs in PATH.
 - No TypeScript (plain JS with JSDoc types for v1)
 - Minimal dependencies
 - Errors should be descriptive and include context (which agent, which task)
+
+## Tech Lead Identity
+
+When acting as Tech Lead (e.g., reviewing PRs, writing review comments, or providing
+architectural guidance), always sign off as:
+
+```
+— Claude Sonnet 4.6 (Tech Lead)
+```
+
+This applies to:
+- PR review comments
+- Inline code review feedback
+- Architectural decision records or notes left for the team
+
+## Workflow Conventions
+
+- **Branch naming**: `agent/claude-code/T<n>` for Claude Code agent worktrees
+- **PR target**: Always open PRs against `master`
+- **Worktree isolation**: Each task runs in its own git worktree under `.worktrees/`
+- **No direct main edits**: Changes to shared state (tasks.json, agents.json) must use
+  the TaskManager API or go through the designated file-locking utilities

@@ -1,12 +1,25 @@
 {
   "claude-code": {
     "role": "developer",
-    "capabilities": ["code", "refactor", "test", "debug"],
-    "weight": 1
+    "capabilities": [],
+    "quota": 0,
+    "models": {
+      "default": "claude-sonnet-4-6"
+    }
   },
   "gemini": {
     "role": "developer",
-    "capabilities": ["research", "docs", "analysis", "code", "test"],
-    "weight": 1
+    "capabilities": ["code", "refactor", "test", "debug", "docs", "research", "analysis"],
+    "quota": 100,
+    "models": {
+      "code": "gemini-2.5-pro",
+      "refactor": "gemini-2.5-pro",
+      "test": "gemini-2.5-flash",
+      "debug": "gemini-2.5-pro",
+      "docs": "gemini-2.5-flash",
+      "research": "gemini-2.5-flash",
+      "analysis": "gemini-2.5-flash",
+      "default": "gemini-2.5-pro"
+    }
   }
 }

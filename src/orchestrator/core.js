@@ -39,7 +39,7 @@ export class Orchestrator {
     this.agentTeamDir = join(this.projectRoot, '.agent-team');
     this.worktreesDir = join(this.projectRoot, '.worktrees');
     this.pollIntervalMs = options.pollIntervalMs ?? 2000;
-    this.taskTimeoutMs = options.taskTimeoutMs ?? 300_000;
+    this.taskTimeoutMs = options.taskTimeoutMs ?? 900_000; // 15 min — complex tasks need time
 
     this.taskManager = new TaskManager(this.agentTeamDir);
     this.comms = new FileCommChannel(this.agentTeamDir);
@@ -78,17 +78,13 @@ export class Orchestrator {
 
     // Detect and register available adapters
     const candidates = [
-      new ClaudeCodeAdapter({ timeoutMs: this.taskTimeoutMs }),
-      new GeminiAdapter({ timeoutMs: this.taskTimeoutMs }),
+      new ClaudeCodeAdapter({ timeoutMs: this.taskTimeoutMs, agentConfig: agentsConfig['claude-code'] }),
+      new GeminiAdapter({ timeoutMs: this.taskTimeoutMs, agentConfig: agentsConfig['gemini'] }),
     ];
 
     for (const adapter of candidates) {
       const available = await adapter.isAvailable();
       if (available) {
-        // Apply capability overrides from agents.json
-        if (agentsConfig[adapter.name]?.capabilities) {
-          adapter.capabilities = agentsConfig[adapter.name].capabilities;
-        }
         this.adapters.set(adapter.name, adapter);
         if (!options.quiet) console.log(`  [+] ${adapter.name} — available`);
       } else {
@@ -232,27 +228,85 @@ export class Orchestrator {
   }
 
   /**
-   * Assign tasks to agents via capability matching with round-robin fallback.
+   * Assign tasks to agents via capability matching with quota-weighted selection.
+   *
+   * Each agent may declare a `quota` in agents.json (e.g. 30 for 30%). Tasks are
+   * distributed proportionally: the agent with the lowest `assignedCount / quota`
+   * ratio is preferred among eligible candidates. Agents without a quota configured
+   * are treated as having equal weight (quota = 1).
+   *
+   * Priority order per task:
+   *   1. Capable agents not previously tried — selected by quota ratio
+   *   2. Any agent not previously tried — selected by quota ratio
+   *   3. Force-assign by quota ratio (avoids getting stuck when all tried)
+   *
    * @param {import('../types/index.js').Task[]} tasks
    */
   async assignTasks(tasks) {
     const agentNames = Array.from(this.adapters.keys());
-    let rrIndex = 0;
 
-    for (const task of tasks) {
-      let agentName = null;
-      if (task.type) {
-        for (const [name, adapter] of this.adapters) {
-          if (adapter.capabilities.includes(task.type)) {
-            agentName = name;
-            break;
-          }
+    // quota weight per agent (from agents.json config, default 1 for equal weight)
+    const quotas = new Map(
+      agentNames.map((name) => [name, this.adapters.get(name).agentConfig?.quota ?? 1]),
+    );
+
+    // running count of tasks assigned to each agent in this batch
+    const assignedCounts = new Map(agentNames.map((name) => [name, 0]));
+
+    /**
+     * Among the given candidates, return the one with the lowest
+     * assignedCount / quota ratio (most "under quota").
+     * @param {string[]} candidates
+     * @returns {string}
+     */
+    const pickByQuota = (candidates) => {
+      let best = candidates[0];
+      let bestRatio = assignedCounts.get(best) / quotas.get(best);
+      for (let i = 1; i < candidates.length; i++) {
+        const name = candidates[i];
+        const ratio = assignedCounts.get(name) / quotas.get(name);
+        if (ratio < bestRatio) {
+          bestRatio = ratio;
+          best = name;
         }
       }
-      if (!agentName) {
-        agentName = agentNames[rrIndex % agentNames.length];
-        rrIndex++;
+      return best;
+    };
+
+    for (const task of tasks) {
+      const previousAgents = task.previous_agents || [];
+      let agentName = null;
+      let routingNote = '';
+
+      // 1. Prefer a capable agent not previously tried — quota-weighted
+      if (task.type) {
+        const capableFresh = agentNames.filter(
+          (name) => this.adapters.get(name).capabilities.includes(task.type) && !previousAgents.includes(name),
+        );
+        if (capableFresh.length > 0) {
+          agentName = pickByQuota(capableFresh);
+          routingNote = `[${task.type}]`;
+        }
       }
+
+      // 2. All capable agents exhausted — try any agent not previously tried, quota-weighted
+      if (!agentName) {
+        const freshAgents = agentNames.filter((name) => !previousAgents.includes(name));
+        if (freshAgents.length > 0) {
+          agentName = pickByQuota(freshAgents);
+          routingNote = task.type
+            ? `[${task.type}→fallback, all capable agents tried]`
+            : '[quota]';
+        }
+      }
+
+      // 3. All agents tried — force by quota ratio (task may fail again, but don't get stuck)
+      if (!agentName) {
+        agentName = pickByQuota(agentNames);
+        routingNote = `[${task.type || 'any'}→force, all agents previously tried]`;
+      }
+
+      const isReassignment = previousAgents.length > 0;
 
       try {
         await this.taskManager.claimTask(task.id, agentName);
@@ -260,8 +314,17 @@ export class Orchestrator {
         await this.taskManager.updateStatus(task.id, 'in_progress', {
           worktree_branch: branchName,
         });
-        const routingNote = task.type ? `[${task.type}]` : '[round-robin]';
-        console.log(`  ${task.id}: "${task.title}" → ${agentName} ${routingNote}`);
+
+        assignedCounts.set(agentName, assignedCounts.get(agentName) + 1);
+
+        if (isReassignment) {
+          console.log(
+            `  ${task.id}: reassigned ${previousAgents.at(-1)} → ${agentName} ` +
+            `(after ${task.retries} failure(s)) ${routingNote}`,
+          );
+        } else {
+          console.log(`  ${task.id}: "${task.title}" → ${agentName} ${routingNote}`);
+        }
       } catch (error) {
         console.error(`  Failed to assign ${task.id}: ${error.message}`);
       }
@@ -300,6 +363,7 @@ export class Orchestrator {
         console.log(`  Wave: starting tasks [${ids}]`);
         tasksToRun.forEach((t) => dispatched.add(t.id));
         await Promise.all(tasksToRun.map((task) => this._runTask(task)));
+        tasksToRun.forEach((t) => dispatched.delete(t.id));
       } else {
         const summary = await this.taskManager.getSummary();
         console.log(

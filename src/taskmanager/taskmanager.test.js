@@ -42,7 +42,8 @@ describe('createTask() defaults from types/index.js', () => {
     assert.equal(task.result_ref, null);
     assert.equal(task.worktree_branch, null);
     assert.equal(task.retries, 0);
-    assert.equal(task.max_retries, 1);
+    assert.equal(task.max_retries, 3);
+    assert.deepEqual(task.previous_agents, []);
   });
 });
 
@@ -62,9 +63,9 @@ describe('isValidTransition()', () => {
   it('invalid: pending → done', () => assert.equal(isValidTransition('pending', 'done'), false));
   it('invalid: pending → failed', () => assert.equal(isValidTransition('pending', 'failed'), false));
   it('invalid: pending → in_progress', () => assert.equal(isValidTransition('pending', 'in_progress'), false));
-  it('invalid: done → pending', () => assert.equal(isValidTransition('done', 'pending'), false));
+  it('valid: done → pending (reject re-queue)', () => assert.equal(isValidTransition('done', 'pending'), true));
   it('invalid: done → claimed', () => assert.equal(isValidTransition('done', 'claimed'), false));
-  it('invalid: in_progress → pending', () => assert.equal(isValidTransition('in_progress', 'pending'), false));
+  it('valid: in_progress → pending (reject re-queue)', () => assert.equal(isValidTransition('in_progress', 'pending'), true));
   it('invalid: in_progress → claimed', () => assert.equal(isValidTransition('in_progress', 'claimed'), false));
   it('invalid: failed → done', () => assert.equal(isValidTransition('failed', 'done'), false));
   it('invalid: unknown → pending', () => assert.equal(isValidTransition('unknown', 'pending'), false));
@@ -84,7 +85,7 @@ describe('TaskManager.addTask()', () => {
     assert.equal(task.title, 'Test task');
     assert.equal(task.status, 'pending');
     assert.equal(task.retries, 0);
-    assert.equal(task.max_retries, 1);
+    assert.equal(task.max_retries, 3);
     assert.equal(task.assigned_to, null);
     assert.deepEqual(task.depends_on, []);
   });

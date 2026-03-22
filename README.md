@@ -8,22 +8,22 @@
 
 ```
 ┌──────────────────────────────────────────────────┐
-│              User / CLI Interface                 │
-│         (node orchestrator.js "prompt")           │
+│         Tech Lead (Claude Code chat)              │
+│     drives each step via CLI verbs                │
 └──────────────────┬───────────────────────────────┘
                    │
 ┌──────────────────▼───────────────────────────────┐
-│              Orchestrator (Leader)                │
+│              Orchestrator (Library)               │
 │                                                   │
 │  ┌─────────────┐ ┌──────────────┐ ┌───────────┐ │
-│  │ Task Planner │ │ Task Manager │ │  Merger   │ │
-│  │ (decompose)  │ │ (assign/     │ │ (combine  │ │
-│  │              │ │  monitor)    │ │  results) │ │
+│  │  decompose   │ │    assign    │ │   merge   │ │
+│  │  (plan)      │ │  (route by   │ │ (combine  │ │
+│  │              │ │  capability) │ │  results) │ │
 │  └─────────────┘ └──────────────┘ └───────────┘ │
 │                                                   │
 │  ┌──────────────────────────────────────────────┐ │
-│  │         Communication Layer (Comms)           │ │
-│  │    File-based IPC  ←→  (future: MQTT)        │ │
+│  │         Session State (.agent-team/)          │ │
+│  │    tasks.json  session.json  results/         │ │
 │  └──────────────────────────────────────────────┘ │
 └──────────┬──────────────────┬────────────────────┘
            │ spawns           │ spawns
@@ -68,55 +68,141 @@ npm install
 npm run check-agents
 ```
 
-### First run
+---
+
+## Chat-Driven Mode (Phase 3) — Primary Usage
+
+The Claude Code chat window **is the Tech Lead**. Instead of a black-box command that runs autonomously, you drive each step from your chat session:
+
+```
+Tech Lead (you) → plans → assigns → reviews → approves/rejects
+Developer agents (Claude Code, Gemini) → implement → report back
+```
+
+### Step-by-step workflow
 
 ```bash
-node src/orchestrator/index.js "Build a REST API with user authentication and unit tests"
+# 1. Decompose the request into discrete tasks
+node src/orchestrator/index.js decompose "Build a REST API with auth and tests"
+
+# 2. Assign tasks to agents by capability (reads agents.json)
+node src/orchestrator/index.js assign
+
+# 3. Execute tasks — all pending, or one at a time
+node src/orchestrator/index.js execute
+node src/orchestrator/index.js execute T1
+
+# 4. Check progress
+node src/orchestrator/index.js status
+
+# 5. Review and accept or reject each result
+node src/orchestrator/index.js accept T1
+node src/orchestrator/index.js reject T2 "Missing error handling on /login"
+
+# 6. Merge accepted branches into main
+node src/orchestrator/index.js merge
+
+# 7. Generate final summary
+node src/orchestrator/index.js report
 ```
+
+Rejected tasks are automatically re-queued as `pending` with the rejection reason appended to their description, so the agent gets feedback on retry.
 
 ---
 
-## Usage Examples
+## CLI Reference
 
-```bash
-# Decompose and implement a feature with both agents in parallel
-node src/orchestrator/index.js "Add a user profile page with avatar upload and settings form"
+| Verb | Arguments | Description |
+|------|-----------|-------------|
+| `decompose` | `"prompt"` | Decompose a request into tasks; saves to `.agent-team/tasks.json` |
+| `assign` | — | Assign pending tasks to agents by capability (reads `agents.json`) |
+| `execute` | `[taskId]` | Execute all pending tasks, or one specific task by ID |
+| `status` | — | Show current session state: tasks, reviews, next action |
+| `accept` | `<taskId>` | Mark a task result as accepted; eligible for merge |
+| `reject` | `<taskId> "reason"` | Reject a result; re-queues task with feedback for retry |
+| `merge` | `[taskId]` | Merge accepted branches into main; reports conflicts |
+| `report` | — | Generate final summary report |
+| `run` | `"prompt"` | Autonomous mode: decompose → assign → execute → merge in one shot |
+| `--tasks` | `<file>` | Load tasks from JSON file and run autonomously |
+| `--check-agents` | — | Check which AI CLI agents are available in PATH |
+| `--version` | — | Print version |
+| `--help` | — | Show help |
 
-# Security + performance audit split across agents
-node src/orchestrator/index.js "Review src/ for security vulnerabilities and performance bottlenecks"
+---
 
-# Multi-file refactor coordinated across worktrees
-node src/orchestrator/index.js "Migrate the codebase from CommonJS to ES modules"
+## Agent Configuration (`agents.json`)
 
-# Check which agents are available before running
-node src/orchestrator/index.js --check-agents
+Capability routing is controlled by `agents.json` at the project root:
+
+```json
+{
+  "claude-code": {
+    "role": "tech-lead-reviewer",
+    "capabilities": ["review"],
+    "weight": 1
+  },
+  "gemini": {
+    "role": "developer",
+    "capabilities": ["code", "refactor", "test", "debug", "docs", "research", "analysis"],
+    "weight": 1
+  }
+}
 ```
+
+Tasks are routed to the first agent whose `capabilities` includes the task `type`. Adjust this file to change routing without touching code.
 
 ---
 
 ## How It Works
 
-The orchestrator runs a **6-step pipeline** for every prompt:
+The orchestrator runs a **step pipeline** for every prompt:
 
 | Step | Name | What happens |
 |------|------|--------------|
 | 1 | **Decompose** | The first available agent analyzes the prompt and returns a JSON array of independent tasks |
-| 2 | **Assign** | Tasks are assigned to agents in round-robin order (e.g., T1 → claude-code, T2 → gemini, T3 → claude-code) |
-| 3 | **Worktree** | A dedicated `git worktree` is created per task, giving each agent a physically isolated working directory on a fresh branch |
-| 4 | **Execute** | All tasks run concurrently via `Promise.all`; each agent receives a structured prompt and works in its worktree |
-| 5 | **Merge** | Completed branches are merged back to main with `git merge --no-ff`; conflicts are detected and reported — never silently overwritten |
-| 6 | **Report** | A summary is printed to stdout and written to `.agent-team/report.json` |
+| 2 | **Assign** | Tasks are routed to agents by capability match (reads `agents.json`) |
+| 3 | **Worktree** | A dedicated `git worktree` is created per task on a fresh branch |
+| 4 | **Execute** | Tasks run concurrently; each agent receives a structured prompt in its worktree |
+| 5 | **Review** | Tech Lead accepts or rejects each result; rejected tasks are re-queued with feedback |
+| 6 | **Merge** | Accepted branches are merged back to main; conflicts detected and reported |
+| 7 | **Report** | Summary printed to stdout and written to `.agent-team/report.json` |
+
+---
+
+## Session State
+
+All state is stored in `.agent-team/` (gitignored):
+
+```
+.agent-team/
+  tasks.json       # task list (managed by TaskManager)
+  session.json     # current phase, reviews, prompt
+  results/         # per-task results (T1.json, T2.json, ...)
+  report.json      # final merged report
+```
+
+Session phases: `decomposed → assigned → executing → reviewing → merged → complete`
+
+---
+
+## Autonomous Mode (v1 compat)
+
+```bash
+# Single command — runs all steps unattended
+node src/orchestrator/index.js run "Build a REST API with user authentication and unit tests"
+
+# Load tasks from a JSON file
+node src/orchestrator/index.js --tasks tasks.json
+```
 
 ---
 
 ## Configuration
 
-Options are passed to the `Orchestrator` constructor in code, or set via environment before running:
-
 | Option | Default | Description |
 |--------|---------|-------------|
 | `pollIntervalMs` | `2000` | How often (ms) the orchestrator polls task status |
-| `taskTimeoutMs` | `300000` | Per-task timeout in ms (5 minutes); the agent process is killed on breach |
+| `taskTimeoutMs` | `900000` | Per-task timeout in ms (15 minutes) |
 
 ### Programmatic usage
 
@@ -124,17 +210,13 @@ Options are passed to the `Orchestrator` constructor in code, or set via environ
 import { Orchestrator } from './src/orchestrator/index.js';
 
 const orchestrator = new Orchestrator('/path/to/your/project', {
-  pollIntervalMs: 5000,   // poll every 5s
-  taskTimeoutMs: 600_000, // 10-minute timeout per task
+  pollIntervalMs: 5000,
+  taskTimeoutMs: 600_000,
 });
 
 await orchestrator.initialize();
 await orchestrator.run('Your task description here');
 ```
-
-### Adding agents at runtime
-
-The orchestrator auto-detects available CLIs on startup. If both `claude` and `gemini` are in `PATH`, both adapters activate automatically. Install or remove CLIs to change the active agent pool without touching configuration files.
 
 ---
 
@@ -144,7 +226,7 @@ See the full guide at [docs/ADDING_ADAPTERS.md](docs/ADDING_ADAPTERS.md). The sh
 
 1. Create `src/adapters/your-agent.js` extending `AgentAdapter`
 2. Implement `buildArgs(task, context)` and `parseOutput(stdout, stderr, duration_ms)`
-3. Register the adapter in `src/orchestrator/index.js`
+3. Register the adapter in `src/orchestrator/core.js`
 
 ```js
 // Minimal skeleton
@@ -171,15 +253,15 @@ export class YourAgentAdapter extends AgentAdapter {
 
 | Feature | **This project** | MCO | AWS CAO |
 |---------|-----------------|-----|---------|
-| Primary focus | Task decomposition + parallel implementation | Code review aggregation | Hierarchical session management |
+| Primary focus | Chat-driven step orchestration | Code review aggregation | Hierarchical session management |
 | Isolation mechanism | **Git worktrees** | None stated | tmux sessions |
 | Language | Node.js | Node.js | Python |
 | Infrastructure required | None | None | tmux 3.3+ |
 | Communication layer | File-based (MQTT-ready) | Not abstracted | Session-based |
 | Agents supported | Claude Code, Gemini | Claude, Codex, Gemini, OpenCode, Qwen | Kiro, Claude, Codex, Gemini, Kimi, Copilot |
+| Tech Lead review loop | Yes — accept/reject/retry | No | No |
 | Conflict detection | Yes — git merge | N/A | N/A |
 | A2A protocol roadmap | v2 | No | No |
-| Stars (as of research) | — | ~215 | ~333 |
 
 ---
 

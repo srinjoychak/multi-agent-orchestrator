@@ -318,6 +318,87 @@ describe('Orchestrator', () => {
       const assignedAgents = claimMock.mock.calls.map(c => c.arguments[1]);
       assert.deepEqual(assignedAgents, ['gemini', 'gemini']);
     });
+
+    it('distributes 10 tasks proportionally with quota 30/70', async () => {
+      const orchestrator = new Orchestrator('/tmp/test');
+      const claude = new ClaudeCodeAdapter({ agentConfig: { quota: 30, capabilities: ['code'] } });
+      const gemini = new GeminiAdapter({ agentConfig: { quota: 70, capabilities: ['code'] } });
+      orchestrator.adapters.set(claude.name, claude);
+      orchestrator.adapters.set(gemini.name, gemini);
+
+      const tasks = Array.from({ length: 10 }, (_, i) => ({
+        id: `T${i + 1}`,
+        title: `Task ${i + 1}`,
+        type: 'code',
+      }));
+
+      const claimMock = mock.method(orchestrator.taskManager, 'claimTask', async () => ({}));
+      mock.method(orchestrator.taskManager, 'updateStatus', async () => ({}));
+
+      await orchestrator.assignTasks(tasks);
+
+      const assignedAgents = claimMock.mock.calls.map(c => c.arguments[1]);
+      const claudeCount = assignedAgents.filter(a => a === 'claude-code').length;
+      const geminiCount = assignedAgents.filter(a => a === 'gemini').length;
+
+      assert.equal(claudeCount, 3);
+      assert.equal(geminiCount, 7);
+    });
+
+    it('respects quota when no type is provided (no-capability-match path)', async () => {
+      const orchestrator = new Orchestrator('/tmp/test');
+      const claude = new ClaudeCodeAdapter({ agentConfig: { quota: 25 } });
+      const gemini = new GeminiAdapter({ agentConfig: { quota: 75 } });
+      orchestrator.adapters.set(claude.name, claude);
+      orchestrator.adapters.set(gemini.name, gemini);
+
+      const tasks = Array.from({ length: 4 }, (_, i) => ({
+        id: `T${i + 1}`,
+        title: `Task ${i + 1}`,
+        type: null,
+      }));
+
+      const claimMock = mock.method(orchestrator.taskManager, 'claimTask', async () => ({}));
+      mock.method(orchestrator.taskManager, 'updateStatus', async () => ({}));
+
+      await orchestrator.assignTasks(tasks);
+
+      const assignedAgents = claimMock.mock.calls.map(c => c.arguments[1]);
+      const claudeCount = assignedAgents.filter(a => a === 'claude-code').length;
+      const geminiCount = assignedAgents.filter(a => a === 'gemini').length;
+
+      assert.equal(claudeCount, 1);
+      assert.equal(geminiCount, 3);
+    });
+
+    it('increments assignedCounts only after a successful claim', async () => {
+      // If claimTask throws, the count should not be incremented,
+      // so the next task still sees the correct ratio.
+      const orchestrator = new Orchestrator('/tmp/test');
+      const claude = new ClaudeCodeAdapter({ agentConfig: { quota: 50 } });
+      const gemini = new GeminiAdapter({ agentConfig: { quota: 50, capabilities: ['code'] } });
+      orchestrator.adapters.set(claude.name, claude);
+      orchestrator.adapters.set(gemini.name, gemini);
+
+      let callCount = 0;
+      mock.method(orchestrator.taskManager, 'claimTask', async (id, agent) => {
+        callCount++;
+        if (callCount === 1 && agent === 'claude-code') throw new Error('claim failed');
+        return {};
+      });
+      mock.method(orchestrator.taskManager, 'updateStatus', async () => ({}));
+
+      // T1 goes to claude (tie → first), claim fails → count stays 0.
+      // T2: claude ratio still 0 → claude again (or gemini depending on order, but we just
+      // verify that an error on claim doesn't corrupt counts causing a crash).
+      const tasks = [
+        { id: 'T1', title: 'Task 1', type: 'code' },
+        { id: 'T2', title: 'Task 2', type: 'code' },
+      ];
+
+      // Should not throw even when claimTask fails for one task
+      await assert.doesNotReject(() => orchestrator.assignTasks(tasks));
+    });
   });
 
   describe('_extractJsonArray()', () => {

@@ -1,13 +1,14 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { AgentAdapter } from './base.js';
+import { platformExec } from '../../platform/detect.js';
 
 const execFileAsync = promisify(execFile);
 
 /**
  * Adapter for Gemini CLI.
  *
- * Invokes: gemini -p "<prompt>" --output-format json --yolo
+ * Invokes: gemini -p "<prompt>" --output-format json --approval-mode=yolo
  * Works in the assigned git worktree directory.
  *
  * Real JSON output schema (--output-format json):
@@ -19,6 +20,10 @@ export class GeminiAdapter extends AgentAdapter {
       ...options,
       capabilities: ['research', 'docs', 'analysis', 'code', 'test'],
     });
+  }
+
+  contextFileName() {
+    return 'GEMINI.md';
   }
 
   getVersionFlag() {
@@ -33,8 +38,11 @@ export class GeminiAdapter extends AgentAdapter {
    */
   buildArgs(task, context) {
     const prompt = this._buildPrompt(task, context);
-    // --yolo: auto-approve all tool actions (required for non-interactive agent use)
-    return ['-p', prompt, '--output-format', 'json', '--yolo'];
+    // --approval-mode=yolo: auto-approve all tool actions (required for non-interactive agent use)
+    const args = ['-p', prompt, '--output-format', 'json', '--approval-mode=yolo'];
+    const model = this.getModel(task.type);
+    if (model) args.push('--model', model);
+    return args;
   }
 
   /**
@@ -44,20 +52,32 @@ export class GeminiAdapter extends AgentAdapter {
    * @returns {string}
    */
   _buildPrompt(task, context) {
-    return [
+    const retryNote = task.retries > 0
+      ? `\nNOTE: This task has failed ${task.retries} time(s) before. Previous attempts did not write files. You MUST write files this time.\n`
+      : '';
+
+    const parts = [
       `Task: ${task.title}`,
       '',
       task.description,
-      '',
+      retryNote,
       `Working directory: ${context.workDir}`,
       `Branch: ${context.branch}`,
+    ];
+
+    // NOTE: Do NOT inject context.agentContext into the prompt here.
+    // Gemini CLI reads GEMINI.md natively from the cwd as project instructions.
+    // Embedding the same content in -p causes "Do NOT delegate to subagents"
+    // to be interpreted twice, which strips Gemini's tool access (write_file, etc.).
+
+    parts.push(
       '',
-      'Instructions:',
-      '- Complete the task described above.',
-      '- Only modify files relevant to this task.',
-      '- Do not modify files outside the scope of this task.',
-      '- When done, provide a summary of changes made.',
-    ].join('\n');
+      'Constraints:',
+      '- Only modify files within your assigned working directory.',
+      '- When done, provide a brief summary of what you changed.',
+    );
+
+    return parts.join('\n');
   }
 
   /**
@@ -156,7 +176,8 @@ export class GeminiAdapter extends AgentAdapter {
    */
   async _getChangedFiles(workDir) {
     try {
-      const { stdout } = await execFileAsync(
+      const { stdout } = await platformExec(
+        execFileAsync,
         'git',
         ['diff', '--name-only', 'HEAD'],
         { cwd: workDir, timeout: 5_000 },

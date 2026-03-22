@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { AgentAdapter } from './base.js';
+import { platformExec } from '../../platform/detect.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -22,6 +23,10 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     });
   }
 
+  contextFileName() {
+    return 'CLAUDE.md';
+  }
+
   getVersionFlag() {
     return '--version';
   }
@@ -34,7 +39,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
    */
   buildArgs(task, context) {
     const prompt = this._buildPrompt(task, context);
-    return [
+    const args = [
       '-p', prompt,
       '--output-format', 'json',
       '--no-session-persistence',
@@ -42,6 +47,9 @@ export class ClaudeCodeAdapter extends AgentAdapter {
       // Safe because each task runs in its own git worktree branch.
       '--dangerously-skip-permissions',
     ];
+    const model = this.getModel(task.type);
+    if (model) args.push('--model', model);
+    return args;
   }
 
   /**
@@ -51,20 +59,25 @@ export class ClaudeCodeAdapter extends AgentAdapter {
    * @returns {string}
    */
   _buildPrompt(task, context) {
-    return [
+    const parts = [
       `Task: ${task.title}`,
       '',
       task.description,
       '',
       `Working directory: ${context.workDir}`,
       `Branch: ${context.branch}`,
+    ];
+
+    parts.push(
       '',
       'Instructions:',
       '- Complete the task described above.',
       '- Only modify files relevant to this task.',
       '- Do not modify files outside the scope of this task.',
       '- When done, provide a summary of changes made.',
-    ].join('\n');
+    );
+
+    return parts.join('\n');
   }
 
   /**
@@ -161,7 +174,8 @@ export class ClaudeCodeAdapter extends AgentAdapter {
    */
   async _getChangedFiles(workDir) {
     try {
-      const { stdout } = await execFileAsync(
+      const { stdout } = await platformExec(
+        execFileAsync,
         'git',
         ['diff', '--name-only', 'HEAD'],
         { cwd: workDir, timeout: 5_000 },

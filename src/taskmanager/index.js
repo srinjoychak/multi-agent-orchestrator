@@ -130,13 +130,20 @@ export class TaskManager {
         task.completed_at = new Date().toISOString();
       }
 
-      if (newStatus === 'failed' && task.retries < task.max_retries) {
-        // Auto-retry: reset to pending
-        task.retries += 1;
-        task.status = 'pending';
-        task.assigned_to = null;
-        task.claimed_at = null;
-        task.completed_at = null;
+      if (newStatus === 'failed') {
+        // Record the failing agent before clearing assignment
+        if (task.assigned_to && !task.previous_agents?.includes(task.assigned_to)) {
+          task.previous_agents = [...(task.previous_agents || []), task.assigned_to];
+        }
+
+        if (task.retries < task.max_retries) {
+          // Auto-retry: reset to pending for reassignment to a different agent
+          task.retries += 1;
+          task.status = 'pending';
+          task.assigned_to = null;
+          task.claimed_at = null;
+          task.completed_at = null;
+        }
       }
 
       Object.assign(task, updates);
@@ -203,7 +210,7 @@ export class TaskManager {
       claimed: tasks.filter((t) => t.status === 'claimed').length,
       in_progress: tasks.filter((t) => t.status === 'in_progress').length,
       done: tasks.filter((t) => t.status === 'done').length,
-      failed: tasks.filter((t) => t.status === 'failed' && t.retries >= t.max_retries).length,
+      failed: tasks.filter((t) => t.status === 'failed').length,
     };
   }
 

@@ -1,4 +1,7 @@
-import { describe, it, mock, afterEach } from 'node:test';
+import { describe, it, mock, afterEach, before, after } from 'node:test';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import assert from 'node:assert/strict';
 import { ClaudeCodeAdapter } from './claude-code.js';
 import { GeminiAdapter } from './gemini.js';
@@ -32,6 +35,14 @@ describe('ClaudeCodeAdapter', () => {
       assert.ok(prompt.includes('Test Description'));
       assert.ok(prompt.includes('/tmp/work'));
       assert.ok(prompt.includes('test-branch'));
+    });
+
+    it('does NOT inject agentContext (Claude reads CLAUDE.md natively)', () => {
+      const task = { title: 'T', description: 'D' };
+      const context = { workDir: 'W', branch: 'B', agentContext: 'Some context' };
+      const prompt = adapter._buildPrompt(task, context);
+      assert.ok(!prompt.includes('Some context'));
+      assert.ok(!prompt.includes('Worktree Context'));
     });
   });
 
@@ -101,6 +112,27 @@ describe('ClaudeCodeAdapter', () => {
 describe('GeminiAdapter', () => {
   const adapter = new GeminiAdapter();
 
+  describe('_buildPrompt', () => {
+    it('does NOT inject agentContext into prompt (Gemini reads GEMINI.md natively from cwd)', () => {
+      // Embedding GEMINI.md content in the -p prompt causes "Do NOT delegate to subagents"
+      // to fire twice, which strips Gemini's tool access (write_file, etc.). Gemini already
+      // reads GEMINI.md natively from cwd — injecting it again in the prompt is harmful.
+      const task = { title: 'T', description: 'D' };
+      const context = { workDir: 'W', branch: 'B', agentContext: 'Gemini context' };
+      const prompt = adapter._buildPrompt(task, context);
+      assert.ok(!prompt.includes('Gemini context'), 'agentContext must NOT appear in Gemini prompt');
+      assert.ok(!prompt.includes('Worktree Context'), 'Worktree Context header must NOT appear in Gemini prompt');
+    });
+
+    it('prompt contains task title and description', () => {
+      const task = { title: 'My Task', description: 'Do something' };
+      const context = { workDir: '/tmp/work', branch: 'main' };
+      const prompt = adapter._buildPrompt(task, context);
+      assert.ok(prompt.includes('My Task'));
+      assert.ok(prompt.includes('Do something'));
+    });
+  });
+
   describe('buildArgs', () => {
     it('returns expected arguments', () => {
       const task = { title: 'T', description: 'D' };
@@ -111,7 +143,7 @@ describe('GeminiAdapter', () => {
         adapter._buildPrompt(task, context),
         '--output-format',
         'json',
-        '--yolo',
+        '--approval-mode=yolo',
       ]);
     });
   });
@@ -248,5 +280,61 @@ describe('AgentAdapter base tests', () => {
     const result = await adapter.execute(task, context);
     assert.strictEqual(result.status, 'failed');
     assert.match(result.summary, /failed:/);
+  });
+
+  describe('_loadContextFile', () => {
+    let tmpDir;
+
+    before(async () => {
+      tmpDir = await mkdtemp(join(tmpdir(), 'adapter-ctx-'));
+    });
+
+    after(async () => {
+      await rm(tmpDir, { recursive: true, force: true });
+    });
+
+    it('returns file content when contextFileName() exists', async () => {
+      const adapter = new DummyAdapter();
+      await writeFile(join(tmpDir, adapter.contextFileName()), '  some context  ');
+      const result = await adapter._loadContextFile(tmpDir);
+      assert.strictEqual(result, 'some context');
+    });
+
+    it('returns null when contextFileName() does not exist', async () => {
+      const adapter = new DummyAdapter();
+      const result = await adapter._loadContextFile('/nonexistent/path');
+      assert.strictEqual(result, null);
+    });
+
+    it('returns null when contextFileName() is empty', async () => {
+      const adapter = new DummyAdapter();
+      const emptyDir = await mkdtemp(join(tmpdir(), 'adapter-empty-'));
+      await writeFile(join(emptyDir, adapter.contextFileName()), '   ');
+      const result = await adapter._loadContextFile(emptyDir);
+      assert.strictEqual(result, null);
+      await rm(emptyDir, { recursive: true, force: true });
+    });
+  });
+
+  it('execute() writes native context file to worktree', async () => {
+    class ContextCheckingAdapter extends AgentAdapter {
+      constructor() { super('checking', 'checking-cli'); }
+      buildArgs() { return ['arg1']; }
+      parseOutput(stdout, _stderr, duration) {
+        return { status: 'done', summary: stdout, filesChanged: [], output: stdout, duration_ms: duration };
+      }
+    }
+    const adapter = new ContextCheckingAdapter();
+    const tmpDir = await mkdtemp(join(tmpdir(), 'adapter-write-'));
+    mock.method(adapter, '_execFile', async () => ({ stdout: 'ok', stderr: '' }));
+
+    await adapter.execute({ id: 'T1', title: 'Test', description: 'Desc' }, { workDir: tmpDir, branch: 'main' });
+    
+    const { existsSync } = await import('node:fs');
+    const ctxPath = join(tmpDir, adapter.contextFileName());
+    assert.ok(existsSync(ctxPath), 'Context file should be written to worktree');
+
+    await rm(tmpDir, { recursive: true, force: true });
+    mock.restoreAll();
   });
 });

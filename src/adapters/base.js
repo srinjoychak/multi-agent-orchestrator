@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process';
+import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { platformExec } from '../../platform/detect.js';
 
@@ -15,13 +17,29 @@ export class AgentAdapter {
    * @param {string} command - CLI command name (e.g., "claude", "gemini")
    * @param {Object} options
    * @param {number} [options.timeoutMs=300000] - Execution timeout (5 min default)
+   * @param {Object} [options.agentConfig={}] - Agent config block from agents.json
    */
   constructor(name, command, options = {}) {
     this.name = name;
     this.command = command;
     this.timeoutMs = options.timeoutMs ?? 300_000;
-    this.capabilities = options.capabilities ?? [];
+    this.agentConfig = options.agentConfig ?? {};
+    // agentConfig.capabilities (from agents.json) takes priority over subclass defaults
+    this.capabilities = this.agentConfig.capabilities ?? options.capabilities ?? [];
     this._process = null;
+  }
+
+  /**
+   * Resolve the model to use for a given task type.
+   * Looks up agentConfig.models[taskType], falls back to models.default.
+   * Returns undefined when no model config is present.
+   * @param {string|null|undefined} taskType
+   * @returns {string|undefined}
+   */
+  getModel(taskType) {
+    const models = this.agentConfig.models;
+    if (!models) return undefined;
+    return (taskType && models[taskType]) || models.default;
   }
 
   /**
@@ -84,12 +102,67 @@ export class AgentAdapter {
   }
 
   /**
+   * Return the filename for the native context file this agent reads automatically.
+   * Override in subclasses: 'GEMINI.md' for Gemini, 'CLAUDE.md' for Claude Code.
+   * This file is written to the worktree root before each execution, overriding any
+   * global config (e.g. ~/.gemini/GEMINI.md) to prevent cross-task memory poisoning.
+   * @returns {string}
+   */
+  contextFileName() {
+    return 'AGENT_CONTEXT.md';
+  }
+
+  /**
+   * Build the content of the per-worktree context file.
+   * @param {import('../types/index.js').Task} task
+   * @param {import('../types/index.js').TaskContext} context
+   * @returns {string}
+   */
+  buildContextFile(task, context) {
+    return [
+      `# Task Context — ${task.id}`,
+      ``,
+      `**Agent:** ${this.name}`,
+      `**Task:** ${task.title}`,
+      `**Branch:** ${context.branch}`,
+      ``,
+      `## Objective`,
+      task.description,
+      ``,
+      `## Constraints`,
+      `- Work only within: ${context.workDir}`,
+      `- Do NOT modify files outside this worktree.`,
+      `- Do NOT use save_memory or write to global config files.`,
+    ].join('\n');
+  }
+
+  /**
+   * Load the per-worktree context file (AGENT_CONTEXT.md) if it exists.
+   * Returns the file content, or null if not found.
+   * @param {string} workDir
+   * @returns {Promise<string|null>}
+   */
+  async _loadContextFile(workDir) {
+    try {
+      const content = await readFile(join(workDir, this.contextFileName()), 'utf8');
+      return content.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Execute a task using the CLI tool.
    * @param {import('../types/index.js').Task} task
    * @param {import('../types/index.js').TaskContext} context
    * @returns {Promise<import('../types/index.js').TaskResult>}
    */
   async execute(task, context) {
+    // Write native context file (GEMINI.md / CLAUDE.md) to worktree root.
+    // This overrides the agent's global config file, preventing cross-task memory poisoning.
+    const ctxPath = join(context.workDir, this.contextFileName());
+    await writeFile(ctxPath, this.buildContextFile(task, context), 'utf-8');
+
     const args = this.buildArgs(task, context);
     const startTime = Date.now();
 
