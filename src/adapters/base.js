@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { platformExec } from '../../platform/detect.js';
 
@@ -100,13 +102,30 @@ export class AgentAdapter {
   }
 
   /**
+   * Load the per-worktree context file (AGENT_CONTEXT.md) if it exists.
+   * Returns the file content, or null if not found.
+   * @param {string} workDir
+   * @returns {Promise<string|null>}
+   */
+  async _loadContextFile(workDir) {
+    try {
+      const content = await readFile(join(workDir, 'AGENT_CONTEXT.md'), 'utf8');
+      return content.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Execute a task using the CLI tool.
    * @param {import('../types/index.js').Task} task
    * @param {import('../types/index.js').TaskContext} context
    * @returns {Promise<import('../types/index.js').TaskResult>}
    */
   async execute(task, context) {
-    const args = this.buildArgs(task, context);
+    const agentContext = await this._loadContextFile(context.workDir);
+    const enrichedContext = agentContext ? { ...context, agentContext } : context;
+    const args = this.buildArgs(task, enrichedContext);
     const startTime = Date.now();
 
     try {

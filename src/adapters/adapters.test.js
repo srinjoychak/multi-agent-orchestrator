@@ -1,4 +1,7 @@
-import { describe, it, mock, afterEach } from 'node:test';
+import { describe, it, mock, afterEach, before, after } from 'node:test';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import assert from 'node:assert/strict';
 import { ClaudeCodeAdapter } from './claude-code.js';
 import { GeminiAdapter } from './gemini.js';
@@ -32,6 +35,21 @@ describe('ClaudeCodeAdapter', () => {
       assert.ok(prompt.includes('Test Description'));
       assert.ok(prompt.includes('/tmp/work'));
       assert.ok(prompt.includes('test-branch'));
+    });
+
+    it('includes agentContext when present', () => {
+      const task = { title: 'Test Task', description: 'Test Description' };
+      const context = { workDir: '/tmp/work', branch: 'test-branch', agentContext: 'Extra context here' };
+      const prompt = adapter._buildPrompt(task, context);
+      assert.ok(prompt.includes('Extra context here'));
+      assert.ok(prompt.includes('Worktree Context'));
+    });
+
+    it('omits context section when agentContext is absent', () => {
+      const task = { title: 'Test Task', description: 'Test Description' };
+      const context = { workDir: '/tmp/work', branch: 'test-branch' };
+      const prompt = adapter._buildPrompt(task, context);
+      assert.ok(!prompt.includes('Worktree Context'));
     });
   });
 
@@ -100,6 +118,23 @@ describe('ClaudeCodeAdapter', () => {
 
 describe('GeminiAdapter', () => {
   const adapter = new GeminiAdapter();
+
+  describe('_buildPrompt', () => {
+    it('includes agentContext when present', () => {
+      const task = { title: 'T', description: 'D' };
+      const context = { workDir: 'W', branch: 'B', agentContext: 'Gemini context' };
+      const prompt = adapter._buildPrompt(task, context);
+      assert.ok(prompt.includes('Gemini context'));
+      assert.ok(prompt.includes('Worktree Context'));
+    });
+
+    it('omits context section when agentContext is absent', () => {
+      const task = { title: 'T', description: 'D' };
+      const context = { workDir: 'W', branch: 'B' };
+      const prompt = adapter._buildPrompt(task, context);
+      assert.ok(!prompt.includes('Worktree Context'));
+    });
+  });
 
   describe('buildArgs', () => {
     it('returns expected arguments', () => {
@@ -248,5 +283,59 @@ describe('AgentAdapter base tests', () => {
     const result = await adapter.execute(task, context);
     assert.strictEqual(result.status, 'failed');
     assert.match(result.summary, /failed:/);
+  });
+
+  describe('_loadContextFile', () => {
+    let tmpDir;
+
+    before(async () => {
+      tmpDir = await mkdtemp(join(tmpdir(), 'adapter-ctx-'));
+    });
+
+    after(async () => {
+      await rm(tmpDir, { recursive: true, force: true });
+    });
+
+    it('returns file content when AGENT_CONTEXT.md exists', async () => {
+      const adapter = new DummyAdapter();
+      await writeFile(join(tmpDir, 'AGENT_CONTEXT.md'), '  some context  ');
+      const result = await adapter._loadContextFile(tmpDir);
+      assert.strictEqual(result, 'some context');
+    });
+
+    it('returns null when AGENT_CONTEXT.md does not exist', async () => {
+      const adapter = new DummyAdapter();
+      const result = await adapter._loadContextFile('/nonexistent/path');
+      assert.strictEqual(result, null);
+    });
+
+    it('returns null when AGENT_CONTEXT.md is empty', async () => {
+      const adapter = new DummyAdapter();
+      const emptyDir = await mkdtemp(join(tmpdir(), 'adapter-empty-'));
+      await writeFile(join(emptyDir, 'AGENT_CONTEXT.md'), '   ');
+      const result = await adapter._loadContextFile(emptyDir);
+      assert.strictEqual(result, null);
+      await rm(emptyDir, { recursive: true, force: true });
+    });
+  });
+
+  it('execute() enriches context with agentContext when file exists', async () => {
+    let receivedArgs;
+    class ContextCapturingAdapter extends AgentAdapter {
+      constructor() { super('capturing', 'capturing-cli'); }
+      buildArgs(task, ctx) { receivedArgs = ctx; return ['arg1']; }
+      parseOutput(stdout, _stderr, duration) {
+        return { status: 'done', summary: stdout, filesChanged: [], output: stdout, duration_ms: duration };
+      }
+    }
+    const adapter = new ContextCapturingAdapter();
+    const tmpDir = await mkdtemp(join(tmpdir(), 'adapter-enrich-'));
+    await writeFile(join(tmpDir, 'AGENT_CONTEXT.md'), 'injected context');
+    mock.method(adapter, '_execFile', async () => ({ stdout: 'ok', stderr: '' }));
+
+    await adapter.execute({ id: 'T1' }, { workDir: tmpDir, branch: 'main' });
+    assert.strictEqual(receivedArgs.agentContext, 'injected context');
+    await rm(tmpDir, { recursive: true, force: true });
+    mock.restoreAll();
   });
 });
