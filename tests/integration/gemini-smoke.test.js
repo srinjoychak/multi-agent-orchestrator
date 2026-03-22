@@ -2,6 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { writeFile } from 'node:fs/promises';
 import { skipIfNoCli, makeTmpDir } from './helpers.js';
 import { GeminiAdapter } from '../../src/adapters/gemini.js';
 import { execFile } from 'node:child_process';
@@ -23,7 +24,7 @@ describe('Gemini Smoke Test', () => {
       await execFileAsync('git', ['config', 'user.name', 'Test User'], { cwd: env.path });
       // Create initial commit
       const readmePath = join(env.path, 'README.md');
-      await execFileAsync('powershell', ['-Command', 'echo "initial" > README.md'], { cwd: env.path });
+      await writeFile(readmePath, 'initial\n', 'utf8');
       await execFileAsync('git', ['add', '.'], { cwd: env.path });
       await execFileAsync('git', ['commit', '-m', 'initial commit'], { cwd: env.path });
 

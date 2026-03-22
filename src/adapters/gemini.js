@@ -53,7 +53,7 @@ export class GeminiAdapter extends AgentAdapter {
    */
   _buildPrompt(task, context) {
     const retryNote = task.retries > 0
-      ? `\nNOTE: This task has failed ${task.retries} time(s) before. Previous attempts did not write files. You MUST write files this time.\n`
+      ? `\nNOTE: This task has failed ${task.retries} time(s) before. This may have been due to tool-access restrictions that are now resolved. You MUST ensure the requested files are written.\n`
       : '';
 
     const parts = [
