@@ -28,6 +28,8 @@ import { stepAssign } from './steps/assign.js';
 import { stepExecute } from './steps/execute.js';
 import { stepStatus } from './steps/status.js';
 import { stepMerge } from './steps/merge.js';
+import { stepReset } from './steps/reset.js';
+import { stepReview } from './steps/review.js';
 import { loadSession, recordReview, patchSession } from './session.js';
 import { TaskManager } from '../taskmanager/index.js';
 
@@ -41,6 +43,8 @@ export const _handlers = {
   stepExecute,
   stepStatus,
   stepMerge,
+  stepReset,
+  stepReview,
   recordReview,
   patchSession,
 };
@@ -145,6 +149,20 @@ async function main() {
       break;
     }
 
+    case 'reset': {
+      // reset [--hard]
+      const hard = args.includes('--hard');
+      await _handlers.stepReset(projectRoot, hard);
+      break;
+    }
+
+    case 'review': {
+      // review [taskId]
+      const taskId = args[1] && !args[1].startsWith('-') ? args[1] : undefined;
+      await _handlers.stepReview(projectRoot, taskId);
+      break;
+    }
+
     case 'merge': {
       // merge [taskId]
       const taskId = args[1] && !args[1].startsWith('-') ? args[1] : undefined;
@@ -207,11 +225,14 @@ STEP-BY-STEP (chat-driven):
   decompose "prompt"       Decompose a request into tasks
   assign                   Assign tasks to agents by capability
   execute [taskId]         Execute all tasks, or one specific task
-  status                   Show current session state
+  status                   Show current session state (compact board)
+  review [taskId]          Show detailed task results for review
   accept <taskId>          Mark a task result as accepted
   reject <taskId> "why"    Mark a task result as rejected
   merge [taskId]           Merge accepted task branches into main
   report                   Generate final summary report
+  reset                    Clear session state to start fresh
+  reset --hard             Also clear tasks.json (full reset)
 
 AUTONOMOUS (v1 compat):
   run "prompt"             Decompose → assign → execute → merge in one shot
