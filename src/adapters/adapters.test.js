@@ -37,18 +37,11 @@ describe('ClaudeCodeAdapter', () => {
       assert.ok(prompt.includes('test-branch'));
     });
 
-    it('includes agentContext when present', () => {
-      const task = { title: 'Test Task', description: 'Test Description' };
-      const context = { workDir: '/tmp/work', branch: 'test-branch', agentContext: 'Extra context here' };
+    it('does NOT inject agentContext (Claude reads CLAUDE.md natively)', () => {
+      const task = { title: 'T', description: 'D' };
+      const context = { workDir: 'W', branch: 'B', agentContext: 'Some context' };
       const prompt = adapter._buildPrompt(task, context);
-      assert.ok(prompt.includes('Extra context here'));
-      assert.ok(prompt.includes('Worktree Context'));
-    });
-
-    it('omits context section when agentContext is absent', () => {
-      const task = { title: 'Test Task', description: 'Test Description' };
-      const context = { workDir: '/tmp/work', branch: 'test-branch' };
-      const prompt = adapter._buildPrompt(task, context);
+      assert.ok(!prompt.includes('Some context'));
       assert.ok(!prompt.includes('Worktree Context'));
     });
   });
@@ -120,19 +113,23 @@ describe('GeminiAdapter', () => {
   const adapter = new GeminiAdapter();
 
   describe('_buildPrompt', () => {
-    it('includes agentContext when present', () => {
+    it('does NOT inject agentContext into prompt (Gemini reads GEMINI.md natively from cwd)', () => {
+      // Embedding GEMINI.md content in the -p prompt causes "Do NOT delegate to subagents"
+      // to fire twice, which strips Gemini's tool access (write_file, etc.). Gemini already
+      // reads GEMINI.md natively from cwd — injecting it again in the prompt is harmful.
       const task = { title: 'T', description: 'D' };
       const context = { workDir: 'W', branch: 'B', agentContext: 'Gemini context' };
       const prompt = adapter._buildPrompt(task, context);
-      assert.ok(prompt.includes('Gemini context'));
-      assert.ok(prompt.includes('Worktree Context'));
+      assert.ok(!prompt.includes('Gemini context'), 'agentContext must NOT appear in Gemini prompt');
+      assert.ok(!prompt.includes('Worktree Context'), 'Worktree Context header must NOT appear in Gemini prompt');
     });
 
-    it('omits context section when agentContext is absent', () => {
-      const task = { title: 'T', description: 'D' };
-      const context = { workDir: 'W', branch: 'B' };
+    it('prompt contains task title and description', () => {
+      const task = { title: 'My Task', description: 'Do something' };
+      const context = { workDir: '/tmp/work', branch: 'main' };
       const prompt = adapter._buildPrompt(task, context);
-      assert.ok(!prompt.includes('Worktree Context'));
+      assert.ok(prompt.includes('My Task'));
+      assert.ok(prompt.includes('Do something'));
     });
   });
 
@@ -319,22 +316,24 @@ describe('AgentAdapter base tests', () => {
     });
   });
 
-  it('execute() writes context file and enriches context.agentContext', async () => {
-    let receivedArgs;
-    class ContextCapturingAdapter extends AgentAdapter {
-      constructor() { super('capturing', 'capturing-cli'); }
-      buildArgs(task, ctx) { receivedArgs = ctx; return ['arg1']; }
+  it('execute() writes native context file to worktree', async () => {
+    class ContextCheckingAdapter extends AgentAdapter {
+      constructor() { super('checking', 'checking-cli'); }
+      buildArgs() { return ['arg1']; }
       parseOutput(stdout, _stderr, duration) {
         return { status: 'done', summary: stdout, filesChanged: [], output: stdout, duration_ms: duration };
       }
     }
-    const adapter = new ContextCapturingAdapter();
-    const tmpDir = await mkdtemp(join(tmpdir(), 'adapter-enrich-'));
+    const adapter = new ContextCheckingAdapter();
+    const tmpDir = await mkdtemp(join(tmpdir(), 'adapter-write-'));
     mock.method(adapter, '_execFile', async () => ({ stdout: 'ok', stderr: '' }));
 
     await adapter.execute({ id: 'T1', title: 'Test', description: 'Desc' }, { workDir: tmpDir, branch: 'main' });
-    // execute() writes the context file then reads it back — agentContext must be present
-    assert.ok(receivedArgs.agentContext, 'agentContext should be set after execute writes context file');
+    
+    const { existsSync } = await import('node:fs');
+    const ctxPath = join(tmpDir, adapter.contextFileName());
+    assert.ok(existsSync(ctxPath), 'Context file should be written to worktree');
+
     await rm(tmpDir, { recursive: true, force: true });
     mock.restoreAll();
   });

@@ -65,19 +65,16 @@ export class GeminiAdapter extends AgentAdapter {
       `Branch: ${context.branch}`,
     ];
 
-    if (context.agentContext) {
-      parts.push('', '## Worktree Context', context.agentContext);
-    }
+    // NOTE: Do NOT inject context.agentContext into the prompt here.
+    // Gemini CLI reads GEMINI.md natively from the cwd as project instructions.
+    // Embedding the same content in -p causes "Do NOT delegate to subagents"
+    // to be interpreted twice, which strips Gemini's tool access (write_file, etc.).
 
     parts.push(
       '',
-      'RULES — read these carefully before doing anything:',
-      '1. Your FIRST action must be to write or edit the required files. Do not spend time reading files unless the task explicitly requires it to determine what to write.',
-      '2. Use your file writing tools (write_file, replace, create) directly. Do NOT use shell commands to write files.',
-      '3. Do NOT describe what you plan to do. Just do it immediately.',
-      '4. Do NOT delegate to a subagent. You must write the files yourself.',
-      '5. Only modify files that are directly required by this task.',
-      '6. When all required files are written, provide a brief summary: which files you changed and what you changed.',
+      'Constraints:',
+      '- Only modify files within your assigned working directory.',
+      '- When done, provide a brief summary of what you changed.',
     );
 
     return parts.join('\n');

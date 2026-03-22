@@ -68,10 +68,6 @@ export class ClaudeCodeAdapter extends AgentAdapter {
       `Branch: ${context.branch}`,
     ];
 
-    if (context.agentContext) {
-      parts.push('', '## Worktree Context', context.agentContext);
-    }
-
     parts.push(
       '',
       'Instructions:',

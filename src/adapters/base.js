@@ -133,7 +133,6 @@ export class AgentAdapter {
       `- Work only within: ${context.workDir}`,
       `- Do NOT modify files outside this worktree.`,
       `- Do NOT use save_memory or write to global config files.`,
-      `- Do NOT delegate to subagents.`,
     ].join('\n');
   }
 
@@ -164,9 +163,7 @@ export class AgentAdapter {
     const ctxPath = join(context.workDir, this.contextFileName());
     await writeFile(ctxPath, this.buildContextFile(task, context), 'utf-8');
 
-    const agentContext = await this._loadContextFile(context.workDir);
-    const enrichedContext = agentContext ? { ...context, agentContext } : context;
-    const args = this.buildArgs(task, enrichedContext);
+    const args = this.buildArgs(task, context);
     const startTime = Date.now();
 
     try {
