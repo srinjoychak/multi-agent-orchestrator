@@ -296,30 +296,30 @@ describe('AgentAdapter base tests', () => {
       await rm(tmpDir, { recursive: true, force: true });
     });
 
-    it('returns file content when AGENT_CONTEXT.md exists', async () => {
+    it('returns file content when contextFileName() exists', async () => {
       const adapter = new DummyAdapter();
-      await writeFile(join(tmpDir, 'AGENT_CONTEXT.md'), '  some context  ');
+      await writeFile(join(tmpDir, adapter.contextFileName()), '  some context  ');
       const result = await adapter._loadContextFile(tmpDir);
       assert.strictEqual(result, 'some context');
     });
 
-    it('returns null when AGENT_CONTEXT.md does not exist', async () => {
+    it('returns null when contextFileName() does not exist', async () => {
       const adapter = new DummyAdapter();
       const result = await adapter._loadContextFile('/nonexistent/path');
       assert.strictEqual(result, null);
     });
 
-    it('returns null when AGENT_CONTEXT.md is empty', async () => {
+    it('returns null when contextFileName() is empty', async () => {
       const adapter = new DummyAdapter();
       const emptyDir = await mkdtemp(join(tmpdir(), 'adapter-empty-'));
-      await writeFile(join(emptyDir, 'AGENT_CONTEXT.md'), '   ');
+      await writeFile(join(emptyDir, adapter.contextFileName()), '   ');
       const result = await adapter._loadContextFile(emptyDir);
       assert.strictEqual(result, null);
       await rm(emptyDir, { recursive: true, force: true });
     });
   });
 
-  it('execute() enriches context with agentContext when file exists', async () => {
+  it('execute() writes context file and enriches context.agentContext', async () => {
     let receivedArgs;
     class ContextCapturingAdapter extends AgentAdapter {
       constructor() { super('capturing', 'capturing-cli'); }
@@ -330,11 +330,11 @@ describe('AgentAdapter base tests', () => {
     }
     const adapter = new ContextCapturingAdapter();
     const tmpDir = await mkdtemp(join(tmpdir(), 'adapter-enrich-'));
-    await writeFile(join(tmpDir, 'AGENT_CONTEXT.md'), 'injected context');
     mock.method(adapter, '_execFile', async () => ({ stdout: 'ok', stderr: '' }));
 
-    await adapter.execute({ id: 'T1' }, { workDir: tmpDir, branch: 'main' });
-    assert.strictEqual(receivedArgs.agentContext, 'injected context');
+    await adapter.execute({ id: 'T1', title: 'Test', description: 'Desc' }, { workDir: tmpDir, branch: 'main' });
+    // execute() writes the context file then reads it back — agentContext must be present
+    assert.ok(receivedArgs.agentContext, 'agentContext should be set after execute writes context file');
     await rm(tmpDir, { recursive: true, force: true });
     mock.restoreAll();
   });

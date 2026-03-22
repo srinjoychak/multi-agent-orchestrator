@@ -23,6 +23,10 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     });
   }
 
+  contextFileName() {
+    return 'CLAUDE.md';
+  }
+
   getVersionFlag() {
     return '--version';
   }

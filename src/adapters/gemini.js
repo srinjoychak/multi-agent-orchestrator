@@ -22,6 +22,10 @@ export class GeminiAdapter extends AgentAdapter {
     });
   }
 
+  contextFileName() {
+    return 'GEMINI.md';
+  }
+
   getVersionFlag() {
     return '--version';
   }
