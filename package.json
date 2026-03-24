@@ -8,13 +8,14 @@
     "orchestrate": "./src/orchestrator/index.js"
   },
   "scripts": {
-    "start": "node src/orchestrator/index.js",
-    "orchestrate": "node src/orchestrator/index.js",
-    "orchestrate:check": "node src/orchestrator/index.js --check-agents",
+    "start": "node src/mcp-server/index.js",
+    "mcp": "node src/mcp-server/index.js",
+    "build": "docker compose -f docker/docker-compose.yml build",
+    "build:workers": "docker build -t worker-gemini -f docker/workers/Dockerfile.gemini . && docker build -t worker-claude -f docker/workers/Dockerfile.claude .",
+    "validate": "bash docker/workers/validate-workers.sh",
     "test": "node --test src/**/*.test.js tests/**/*.test.js",
     "test:unit": "node --test src/**/*.test.js",
-    "test:integration": "node --test tests/**/*.test.js",
-    "check-agents": "node src/adapters/check.js"
+    "test:integration": "node --test tests/**/*.test.js"
   },
   "keywords": [
     "ai-agents",
@@ -24,5 +25,9 @@
     "gemini-cli",
     "agent-teams"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "better-sqlite3": "^12.8.0"
+  }
 }

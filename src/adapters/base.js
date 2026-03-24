@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { platformExec } from '../../platform/detect.js';
+import { platformExec, spawnCollect } from '../../platform/detect.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -98,6 +98,13 @@ export class AgentAdapter {
    * @returns {Promise<{stdout: string, stderr: string}>}
    */
   async _execFile(command, args, options) {
+    // Use spawnCollect for agent task execution (long-running) — it resolves on
+    // process EXIT rather than stream CLOSE, so MCP/ConPTY child processes that
+    // inherit the stdio pipes don't cause the call to hang after the agent exits.
+    // Fall back to platformExec (execFileAsync) for short version checks.
+    if (options && (options.timeout ?? 0) > 30_000) {
+      return spawnCollect(command, args, options);
+    }
     return platformExec(execFileAsync, command, args, options);
   }
 
