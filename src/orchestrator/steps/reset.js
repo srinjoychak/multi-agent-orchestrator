@@ -10,8 +10,12 @@
  */
 
 import { join, resolve } from 'node:path';
-import { rm, unlink } from 'node:fs/promises';
+import { rm, unlink, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 /**
  * @param {string} projectRoot
@@ -23,6 +27,7 @@ export async function stepReset(projectRoot, hard = false) {
   const agentTeamDir = join(root, '.agent-team');
   const sessionPath = join(agentTeamDir, 'session.json');
   const tasksPath = join(agentTeamDir, 'tasks.json');
+  const worktreesDir = join(root, '.worktrees');
 
   let sessionCleared = false;
   let tasksCleared = false;
@@ -43,6 +48,38 @@ export async function stepReset(projectRoot, hard = false) {
     } else {
       console.log('  No tasks file to clear.');
     }
+
+    // Prune abandoned worktrees and branches
+    if (existsSync(worktreesDir)) {
+      try {
+        const entries = await readdir(worktreesDir);
+        for (const entry of entries) {
+          const worktreePath = join(worktreesDir, entry);
+          console.log(`  Pruning worktree: ${entry}...`);
+          try {
+            await execFileAsync('git', ['worktree', 'remove', worktreePath, '--force'], { cwd: root });
+          } catch { /* ignore */ }
+        }
+        await rm(worktreesDir, { recursive: true, force: true });
+        console.log('✓ Worktrees pruned.');
+      } catch (error) {
+        console.warn(`  Failed to prune worktrees: ${error.message}`);
+      }
+    }
+
+    // Prune agent branches
+    try {
+      const { stdout } = await execFileAsync('git', ['branch', '--list', 'agent/*'], { cwd: root });
+      const branches = stdout.split('\n').map((b) => b.trim()).filter(Boolean);
+      for (const branch of branches) {
+        const name = branch.replace(/^\* /, '');
+        console.log(`  Deleting branch: ${name}...`);
+        try {
+          await execFileAsync('git', ['branch', '-D', name], { cwd: root });
+        } catch { /* ignore */ }
+      }
+      if (branches.length > 0) console.log('✓ Agent branches deleted.');
+    } catch { /* ignore */ }
   }
 
   console.log('\nReady to start fresh. Run: decompose "your request"');

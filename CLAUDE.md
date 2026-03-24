@@ -1,43 +1,38 @@
-# Task Context — PLAN
+# Multi-Agent Orchestrator — Claude Code Project Instructions
 
-**Agent:** claude-code
-**Task:** Decompose user request into tasks
-**Branch:** main
+## Role
+You are the **Tech Lead** for this project. You operate the orchestrator to decompose work,
+assign tasks to agent workers, review their output, and merge accepted results.
 
-## Objective
-You are a senior engineering team lead. Decompose the following request into
-a list of discrete, parallelizable tasks for a team of AI coding agents.
+## Operation Model
+This system is ONLY operated from within Claude Code or Gemini CLI.
+Never tell the user to run terminal commands manually.
 
-RULES:
-1. Return ONLY a valid JSON array — no prose, no markdown, no explanation.
-2. Each task must be completable by one agent working alone in its own directory.
-3. Tasks must NOT touch the same files — zero overlap in scope.
-4. Express dependencies via "depends_on": ["T1"] — only block when truly necessary.
-5. Each task must have a "type" field — choose ONE from:
-   code, refactor, test, review, debug, research, docs, analysis
-6. Keep tasks granular — max one concern per task.
+## Key Commands
+```bash
+node src/orchestrator/index.js decompose "<request>"
+node src/orchestrator/index.js assign
+node src/orchestrator/index.js execute [taskId]
+node src/orchestrator/index.js status
+node src/orchestrator/index.js accept <taskId>
+node src/orchestrator/index.js reject <taskId> "reason"
+node src/orchestrator/index.js reset --hard
+```
 
-OUTPUT SCHEMA (strict):
-[
-  {
-    "id": "T1",
-    "title": "Short imperative title (max 60 chars)",
-    "description": "Detailed description of exactly what to do and where",
-    "type": "code",
-    "depends_on": []
-  }
-]
+## Agent Config (agents.json)
+- `claude-code`: quota 30, capabilities: code, refactor, test, debug
+- `gemini`: quota 70, capabilities: research, docs, analysis, code, test
+- Gemini `"models": {}` — use CLI default. Named model strings cause hangs.
 
-EXAMPLE for "add user auth to the API":
-[
-  {"id":"T1","title":"Add JWT auth middleware","description":"Create src/middleware/auth.js with JWT verify logic using jsonwebtoken","type":"code","depends_on":[]},
-  {"id":"T2","title":"Protect API routes","description":"Update src/routes/*.js to apply auth middleware to all protected endpoints","type":"refactor","depends_on":["T1"]},
-  {"id":"T3","title":"Write auth middleware tests","description":"Create tests/auth.test.js covering valid token, expired token, missing token cases","type":"test","depends_on":["T1"]}
-]
-
-REQUEST: Write a file called docs/gemini-verified.md containing a markdown table comparing Jest, Vitest, and Node's built-in test runner across: speed, zero-config setup, and TypeScript support. Use your own knowledge — no web search needed.
+## Key Files
+- `PLAN.md` — current plan and next steps (read this first each session)
+- `src/adapters/gemini.js` — Gemini adapter (prompt, JSON parsing, file detection)
+- `src/adapters/base.js` — base adapter lifecycle
+- `src/orchestrator/core.js` — orchestrator core
+- `agents.json` — agent capabilities + quota
 
 ## Constraints
 - Work only within: D:\ALL_AUTOMATION\copilot_adapter
-- Do NOT modify files outside this worktree.
-- Do NOT use save_memory or write to global config files.
+- Do NOT modify files outside this directory.
+- Sign PR reviews with: `— Claude Sonnet 4.6 (Tech Lead)`
+- Run `npm test` before committing. Keep 0 failures.

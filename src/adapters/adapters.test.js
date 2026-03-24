@@ -124,12 +124,12 @@ describe('GeminiAdapter', () => {
       assert.ok(!prompt.includes('Worktree Context'), 'Worktree Context header must NOT appear in Gemini prompt');
     });
 
-    it('prompt contains task title and description', () => {
+    it('prompt contains task title', () => {
       const task = { title: 'My Task', description: 'Do something' };
       const context = { workDir: '/tmp/work', branch: 'main' };
       const prompt = adapter._buildPrompt(task, context);
       assert.ok(prompt.includes('My Task'));
-      assert.ok(prompt.includes('Do something'));
+      assert.ok(prompt.includes('GEMINI.md'));
     });
   });
 
@@ -143,7 +143,9 @@ describe('GeminiAdapter', () => {
         adapter._buildPrompt(task, context),
         '--output-format',
         'json',
-        '--approval-mode=yolo',
+        '-y',
+        '--allowed-mcp-server-names',
+        'none'
       ]);
     });
   });

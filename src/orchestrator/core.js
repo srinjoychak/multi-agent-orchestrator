@@ -227,6 +227,7 @@ export class Orchestrator {
         id: 'T1',
         title: userPrompt.slice(0, 80),
         description: userPrompt,
+        type: 'docs', // Add default type
       });
       return [task];
     }

@@ -38,8 +38,14 @@ export class GeminiAdapter extends AgentAdapter {
    */
   buildArgs(task, context) {
     const prompt = this._buildPrompt(task, context);
-    // --approval-mode=yolo: auto-approve all tool actions (required for non-interactive agent use)
-    const args = ['-p', prompt, '--output-format', 'json', '--approval-mode=yolo'];
+    // -y: auto-approve all tool actions (YOLO mode)
+    // --allowed-mcp-server-names none: prevent hangs on disconnected MCP servers
+    const args = [
+      '-p', prompt,
+      '--output-format', 'json',
+      '-y',
+      '--allowed-mcp-server-names', 'none'
+    ];
     const model = this.getModel(task.type);
     if (model) args.push('--model', model);
     return args;
@@ -52,35 +58,10 @@ export class GeminiAdapter extends AgentAdapter {
    * @returns {string}
    */
   _buildPrompt(task, context) {
-    const retryNote = task.retries > 0
-      ? `\nNOTE: This task has failed ${task.retries} time(s) before. This may have been due to tool-access restrictions that are now resolved. You MUST ensure the requested files are written.\n`
-      : '';
-
-    const parts = [
-      `Task: ${task.title}`,
-      '',
-      task.description,
-      retryNote,
-      `Working directory: ${context.workDir}`,
-      `Branch: ${context.branch}`,
-    ];
-
-    // NOTE: Do NOT inject context.agentContext into the prompt here.
-    // Gemini CLI reads GEMINI.md natively from the cwd as project instructions.
-    // Embedding the same content in -p causes "Do NOT delegate to subagents"
-    // to be interpreted twice, which strips Gemini's tool access (write_file, etc.).
-
-    parts.push(
-      '',
-      'IMPORTANT: You must write output to a file. Do not just describe what you plan to do.',
-      'Use your write_file tool to create or update files in your working directory.',
-      '',
-      'Constraints:',
-      '- Only modify files within your assigned working directory.',
-      '- When done, provide a brief summary of what files you created or changed.',
-    );
-
-    return parts.join('\n');
+    // Gemini CLI reads GEMINI.md natively from the cwd for project context.
+    // We only provide the title and a brief directive to avoid the
+    // "redundant instructions" trap that suppresses tool access.
+    return `Task: ${task.title}\n\nPlease complete the task described in GEMINI.md.`;
   }
 
   /**

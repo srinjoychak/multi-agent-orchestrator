@@ -160,8 +160,12 @@ export class AgentAdapter {
   async execute(task, context) {
     // Write native context file (GEMINI.md / CLAUDE.md) to worktree root.
     // This overrides the agent's global config file, preventing cross-task memory poisoning.
-    const ctxPath = join(context.workDir, this.contextFileName());
-    await writeFile(ctxPath, this.buildContextFile(task, context), 'utf-8');
+    // Skip when workDir === projectRoot (e.g. the PLAN/decompose task runs in the project root)
+    // to avoid overwriting the real CLAUDE.md project instructions.
+    if (context.workDir !== context.projectRoot) {
+      const ctxPath = join(context.workDir, this.contextFileName());
+      await writeFile(ctxPath, this.buildContextFile(task, context), 'utf-8');
+    }
 
     const args = this.buildArgs(task, context);
     const startTime = Date.now();
