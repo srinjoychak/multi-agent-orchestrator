@@ -70,7 +70,12 @@ export class WorktreeManager {
     const path = this.worktreePath(taskId, agentName);
     const branch = this.branchName(taskId, agentName);
 
-    if (!existsSync(path)) {
+    if (existsSync(path)) {
+      // Worktree directory exists from a prior run — clean untracked/modified
+      // files so stale artifacts don't pollute the new task's commit.
+      await this._gitIn(path, ['checkout', '.']).catch(() => {});
+      await this._gitIn(path, ['clean', '-fd']).catch(() => {});
+    } else {
       const base = await this._getBaseBranch();
       // Delete stale branch if it exists without a worktree (from a prior failed run)
       await this._git(['branch', '-D', branch]).catch(() => {});
@@ -257,5 +262,9 @@ export class WorktreeManager {
    */
   _git(args) {
     return execFileAsync('git', args, { cwd: this.projectRoot });
+  }
+
+  _gitIn(dir, args) {
+    return execFileAsync('git', args, { cwd: dir });
   }
 }
