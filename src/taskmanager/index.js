@@ -125,6 +125,18 @@ export class TaskManager {
       const task = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
       if (!task) throw new Error(`Task ${taskId} not found`);
       if (task.status !== 'pending') throw new Error(`Task ${taskId} is ${task.status}, cannot claim`);
+
+      // Check dependency blockers
+      const deps = JSON.parse(task.depends_on || '[]');
+      if (deps.length > 0) {
+        for (const depId of deps) {
+          const dep = this.db.prepare('SELECT status FROM tasks WHERE id = ?').get(depId);
+          if (!dep || dep.status !== 'done') {
+            throw new Error(`Task ${taskId} is blocked by dependency ${depId}`);
+          }
+        }
+      }
+
       this.db.prepare(`
         UPDATE tasks SET status='claimed', assigned_to=?, claimed_at=datetime('now')
         WHERE id=? AND status='pending'
@@ -165,6 +177,20 @@ export class TaskManager {
         }
       }
       this.db.prepare(`UPDATE tasks SET ${setClauses.join(', ')} WHERE id = @id`).run(params);
+
+      // Auto-retry on failure if retries < max_retries
+      if (newStatus === 'failed') {
+        const updated = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
+        if (updated.retries < updated.max_retries) {
+          const prev = JSON.parse(updated.previous_agents ?? '[]');
+          if (updated.assigned_to && !prev.includes(updated.assigned_to)) prev.push(updated.assigned_to);
+          this.db.prepare(`
+            UPDATE tasks SET status='pending', assigned_to=NULL, claimed_at=NULL,
+              completed_at=NULL, container_id=NULL, retries=retries+1, previous_agents=?
+            WHERE id=?
+          `).run(JSON.stringify(prev), taskId);
+        }
+      }
     })();
     return this.getTask(taskId);
   }
@@ -211,6 +237,17 @@ export class TaskManager {
       result = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
     })();
     return result ? this._deserialise(result) : null;
+  }
+
+  /**
+   * Get all tasks assigned to a specific agent.
+   * @param {string} agentName
+   * @returns {Object[]}
+   */
+  async getTasksByAgent(agentName) {
+    return this.db.prepare('SELECT * FROM tasks WHERE assigned_to = ? ORDER BY created_at')
+      .all(agentName)
+      .map(r => this._deserialise(r));
   }
 
   /** Reset stale claims (claimed > 10 min ago) back to pending. */
