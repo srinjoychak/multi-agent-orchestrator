@@ -1,0 +1,56 @@
+version: '3.8'
+
+# Multi-Agent Orchestrator — Docker Compose stack
+#
+# The orchestrator MCP server runs as a container registered in Docker MCP Toolkit.
+# Worker images (worker-gemini, worker-claude) are built separately and pulled at runtime.
+#
+# Usage:
+#   docker compose -f docker/docker-compose.yml up orchestrator
+#   docker mcp server add orchestrator --image orchestrator:latest
+#   docker mcp client connect claude-code
+#   docker mcp client connect gemini
+
+services:
+
+  orchestrator:
+    build:
+      context: ..
+      dockerfile: docker/orchestrator/Dockerfile
+    image: orchestrator:latest
+    volumes:
+      # Project directory — orchestrator manages worktrees here
+      - ${PROJECT_ROOT:-/mnt/d/ALL_AUTOMATION/copilot_adapter}:/project
+      # Docker socket — allows orchestrator to spawn worker containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Auth credentials (read-only) — passed through to worker containers via env
+      - ${HOME}/.gemini:/auth/gemini:ro
+      - ${HOME}/.claude:/auth/claude:ro
+    environment:
+      - PROJECT_ROOT=/project
+      - GEMINI_AUTH_DIR=/auth/gemini
+      - CLAUDE_AUTH_DIR=/auth/claude
+      - HOME=/app
+    stdin_open: true   # MCP server communicates over stdio
+    tty: false
+    restart: unless-stopped
+
+  # Worker images are not run via compose — they are spawned by the orchestrator at runtime.
+  # Build them here for convenience:
+  #   docker compose -f docker/docker-compose.yml build worker-gemini worker-claude
+
+  worker-gemini:
+    build:
+      context: ..
+      dockerfile: docker/workers/Dockerfile.gemini
+    image: worker-gemini:latest
+    profiles:
+      - build-only   # Not started by default
+
+  worker-claude:
+    build:
+      context: ..
+      dockerfile: docker/workers/Dockerfile.claude
+    image: worker-claude:latest
+    profiles:
+      - build-only   # Not started by default

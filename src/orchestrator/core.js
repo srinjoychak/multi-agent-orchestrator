@@ -1,334 +1,204 @@
 /**
- * Orchestrator core — library entry point.
+ * Orchestrator Core — v3
  *
- * This module exports the Orchestrator class only. No process.argv, no main().
- * The CLI entry point lives in index.js.
+ * Coordinates task decomposition, agent assignment, Docker execution,
+ * and result management. Consumes:
+ *   - TaskManager (SQLite)
+ *   - DockerRunner (container lifecycle)
+ *   - WorktreeManager (git isolation)
+ *   - AgentRouter (capability + quota routing)
+ *
+ * Token optimization:
+ *   - Gemini handles research/docs/analysis by default (free tier)
+ *   - Claude handles code/refactor/debug (precision tasks)
+ *   - Token usage is tracked per task in SQLite
  */
 
 import { join, resolve } from 'node:path';
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { spawn } from 'node:child_process';
 import { TaskManager } from '../taskmanager/index.js';
-import { FileCommChannel } from '../comms/file-channel.js';
-import { ClaudeCodeAdapter } from '../adapters/claude-code.js';
-import { GeminiAdapter } from '../adapters/gemini.js';
+import { DockerRunner } from '../docker/runner.js';
+import { WorktreeManager } from '../worktree/index.js';
+import { AgentRouter } from '../router/index.js';
 import { ResultMerger } from '../merger/index.js';
 
 const execFileAsync = promisify(execFile);
 
+const VALID_TYPES = new Set(['code', 'refactor', 'test', 'review', 'debug', 'research', 'docs', 'analysis']);
+
 /**
- * Main orchestrator class.
- *
- * Lifecycle (chat-driven):
- *   new Orchestrator(root) → initialize() → decomposeTasks() → assignTasks()
- *   → _runTask() per task → merger.mergeAll()
- *
- * Or autonomously via run().
+ * Agent definitions — maps agentName to CLI config.
+ * Merged with agents.json on initialize().
  */
+const DEFAULT_AGENTS = {
+  gemini: {
+    image: 'worker-gemini:latest',
+    capabilities: ['research', 'docs', 'analysis', 'code', 'test'],
+    quota: 70,
+    timeoutMs: 120_000,
+    cliArgs: (prompt) => ['-p', prompt, '-y'],
+    parseOutput: parseGeminiOutput,
+    auth: { mountFrom: `${process.env.HOME}/.gemini`, mountTo: '/home/node/.gemini', mode: 'rw' },
+  },
+  'claude-code': {
+    image: 'worker-claude:latest',
+    capabilities: ['code', 'refactor', 'test', 'debug', 'review'],
+    quota: 30,
+    timeoutMs: 300_000,
+    cliArgs: (prompt) => ['--print', '-p', prompt, '--output-format', 'json', '--dangerously-skip-permissions', '--no-session-persistence'],
+    parseOutput: parseClaudeOutput,
+    auth: { mountFrom: `${process.env.HOME}/.claude`, mountTo: '/home/node/.claude', mode: 'ro' },
+  },
+};
+
 export class Orchestrator {
   /**
    * @param {string} projectRoot
    * @param {Object} [options]
    * @param {number} [options.pollIntervalMs=2000]
-   * @param {number} [options.taskTimeoutMs=300000]
    */
   constructor(projectRoot, options = {}) {
     this.projectRoot = resolve(projectRoot);
-    this.agentTeamDir = join(this.projectRoot, '.agent-team');
-    this.worktreesDir = join(this.projectRoot, '.worktrees');
+    this.stateDir = join(this.projectRoot, '.agent-team');
     this.pollIntervalMs = options.pollIntervalMs ?? 2000;
-    this.taskTimeoutMs = options.taskTimeoutMs ?? 900_000; // 15 min — complex tasks need time
 
-    this.taskManager = new TaskManager(this.agentTeamDir);
-    this.comms = new FileCommChannel(this.agentTeamDir);
-    this.merger = new ResultMerger(this.projectRoot, this.agentTeamDir);
+    this.taskManager = new TaskManager(this.stateDir);
+    this.docker = new DockerRunner();
+    this.worktreeManager = new WorktreeManager(this.projectRoot);
+    this.merger = new ResultMerger(this.projectRoot, join(this.stateDir, 'results'));
 
-    this.adapters = new Map();
-    this._running = false;
+    /** @type {Map<string, Object>} agentName -> agent config */
+    this.agents = new Map();
+    this.router = null;
   }
 
   /**
-   * Initialize: create dirs, probe CLIs, apply agents.json config.
+   * Initialize: load agent config, verify Docker, set up directories.
    * @param {Object} [options]
-   * @param {boolean} [options.quiet=false] - suppress banner output
+   * @param {boolean} [options.quiet=false]
    */
   async initialize(options = {}) {
     if (!options.quiet) {
       console.log('');
-      console.log('╔══════════════════════════════════════╗');
-      console.log('║   Multi-Agent Orchestrator  v0.2.0   ║');
-      console.log('╚══════════════════════════════════════╝');
+      console.log('Multi-Agent Orchestrator v3');
       console.log('');
-      console.log('Initializing orchestrator...');
     }
 
-    for (const dir of [this.agentTeamDir, this.worktreesDir, this.merger.resultsDir]) {
-      if (!existsSync(dir)) {
-        await mkdir(dir, { recursive: true });
-      }
+    // Create state directories
+    for (const dir of [this.stateDir, join(this.stateDir, 'results')]) {
+      if (!existsSync(dir)) await mkdir(dir, { recursive: true });
     }
 
     await this.taskManager.initialize();
-    await this.comms.initialize();
 
-    // Load agents.json capability overrides if present
-    const agentsConfig = await this._loadAgentsConfig();
-
-    // Detect and register available adapters
-    const candidates = [
-      new ClaudeCodeAdapter({ timeoutMs: this.taskTimeoutMs, agentConfig: agentsConfig['claude-code'] }),
-      new GeminiAdapter({ timeoutMs: this.taskTimeoutMs, agentConfig: agentsConfig['gemini'] }),
-    ];
-
-    for (const adapter of candidates) {
-      const available = await adapter.isAvailable();
-      if (available) {
-        this.adapters.set(adapter.name, adapter);
-        if (!options.quiet) console.log(`  [+] ${adapter.name} — available`);
-      } else {
-        if (!options.quiet) console.log(`  [-] ${adapter.name} — not found, skipping`);
-      }
+    // Load agents.json config and merge with defaults
+    const agentsJson = await this._loadAgentsJson();
+    for (const [name, defaults] of Object.entries(DEFAULT_AGENTS)) {
+      const override = agentsJson[name] ?? {};
+      this.agents.set(name, { ...defaults, ...override, name });
     }
 
-    if (this.adapters.size === 0) {
-      throw new Error('No AI agents available. Install claude or gemini CLI.');
-    }
+    // Build adapter-like objects for the router
+    const adapterMap = new Map(
+      Array.from(this.agents.entries()).map(([name, cfg]) => [name, { capabilities: cfg.capabilities }])
+    );
+    this.router = new AgentRouter(adapterMap, Object.fromEntries(this.agents));
 
-    if (!options.quiet) console.log(`  ${this.adapters.size} agent(s) ready.\n`);
-  }
-
-  /**
-   * Load agents.json from project root (optional config).
-   * @returns {Promise<Object>}
-   */
-  async _loadAgentsConfig() {
-    const configPath = join(this.projectRoot, 'agents.json');
-    if (!existsSync(configPath)) return {};
-    try {
-      const raw = await readFile(configPath, 'utf-8');
-      return JSON.parse(raw);
-    } catch {
-      return {};
+    if (!options.quiet) {
+      console.log(`  Agents: ${Array.from(this.agents.keys()).join(', ')}`);
+      console.log(`  State: ${this.stateDir}`);
+      console.log('');
     }
   }
 
   /**
-   * Run the full autonomous pipeline (v1 compat).
-   * @param {string|import('../types/index.js').Task[]} input
-   */
-  async run(input) {
-    this._running = true;
-
-    try {
-      let tasks;
-      if (typeof input === 'string') {
-        console.log('Step 1: Decomposing request into tasks...');
-        tasks = await this.decomposeTasks(input);
-      } else {
-        tasks = input;
-        console.log(`Step 1: Skipped (loaded ${tasks.length} tasks from file).`);
-      }
-      console.log(`  Working with ${tasks.length} tasks.\n`);
-
-      console.log('Step 2: Assigning tasks to agents...');
-      await this.assignTasks(tasks);
-
-      console.log('\nStep 3: Executing tasks in parallel...');
-      await this.executeTasks();
-
-      console.log('\nStep 4: Monitoring progress...');
-      await this.monitorUntilComplete();
-
-      console.log('\nStep 5: Merging results...');
-      const allTasks = await this.taskManager.getTasks();
-      const mergeResult = await this.merger.mergeAll(allTasks);
-
-      console.log('\nStep 6: Generating report...');
-      const report = await this.merger.generateReport(allTasks, mergeResult);
-      console.log('\n' + report);
-
-      await this.cleanup(allTasks);
-    } finally {
-      this._running = false;
-      await this.comms.destroy();
-    }
-  }
-
-  /**
-   * Decompose a user prompt into discrete tasks using the first available agent.
+   * Decompose a user prompt into discrete tasks using a planner.
+   * Uses Gemini for decomposition (free tier) to save Claude quota.
    * @param {string} userPrompt
-   * @returns {Promise<import('../types/index.js').Task[]>}
+   * @returns {Promise<Object[]>}
    */
   async decomposeTasks(userPrompt) {
-    const planner = this.adapters.values().next().value;
-
-    const planPrompt = [
-      'You are a senior engineering team lead. Decompose the following request into',
-      'a list of discrete, parallelizable tasks for a team of AI coding agents.',
-      '',
-      'RULES:',
-      '1. Return ONLY a valid JSON array — no prose, no markdown, no explanation.',
-      '2. Each task must be completable by one agent working alone in its own directory.',
-      '3. Tasks must NOT touch the same files — zero overlap in scope.',
-      '4. Express dependencies via "depends_on": ["T1"] — only block when truly necessary.',
-      '5. Each task must have a "type" field — choose ONE from:',
-      '   code, refactor, test, review, debug, research, docs, analysis',
-      '6. Keep tasks granular — max one concern per task.',
-      '',
-      'OUTPUT SCHEMA (strict):',
-      '[',
-      '  {',
-      '    "id": "T1",',
-      '    "title": "Short imperative title (max 60 chars)",',
-      '    "description": "Detailed description of exactly what to do and where",',
-      '    "type": "code",',
-      '    "depends_on": []',
-      '  }',
-      ']',
-      '',
-      'EXAMPLE for "add user auth to the API":',
-      '[',
-      '  {"id":"T1","title":"Add JWT auth middleware","description":"Create src/middleware/auth.js with JWT verify logic using jsonwebtoken","type":"code","depends_on":[]},',
-      '  {"id":"T2","title":"Protect API routes","description":"Update src/routes/*.js to apply auth middleware to all protected endpoints","type":"refactor","depends_on":["T1"]},',
-      '  {"id":"T3","title":"Write auth middleware tests","description":"Create tests/auth.test.js covering valid token, expired token, missing token cases","type":"test","depends_on":["T1"]}',
-      ']',
-      '',
-      `REQUEST: ${userPrompt}`,
-    ].join('\n');
-
-    const planTask = {
-      id: 'PLAN',
-      title: 'Decompose user request into tasks',
-      description: planPrompt,
-    };
-
-    const context = {
-      workDir: this.projectRoot,
-      branch: 'main',
-      projectRoot: this.projectRoot,
-      teamConfig: {},
-    };
-
-    const result = await planner.execute(planTask, context);
-
-    try {
-      const parsed = this._extractJsonArray(result.summary || result.output);
-      return this.taskManager.addTasks(parsed);
-    } catch {
-      console.error('Failed to parse task plan. Creating single task.');
-      const task = await this.taskManager.addTask({
+    // Short-circuit: very short prompts are single tasks
+    if (userPrompt.length < 200 && !userPrompt.includes('\n')) {
+      return this.taskManager.addTasks([{
         id: 'T1',
         title: userPrompt.slice(0, 80),
         description: userPrompt,
-      });
-      return [task];
+        type: 'code',
+      }]);
+    }
+
+    const planPrompt = [
+      'Decompose the following software engineering request into discrete, parallelizable tasks.',
+      '',
+      'Rules:',
+      '1. Return ONLY a valid JSON array — no prose, no markdown.',
+      '2. Each task must be completable by one agent working alone in its own directory.',
+      '3. Tasks must NOT touch the same files.',
+      '4. Express dependencies via "depends_on": ["T1"].',
+      '5. type must be one of: code, refactor, test, review, debug, research, docs, analysis',
+      '',
+      'Schema: [{"id":"T1","title":"<60 chars","description":"detailed instructions","type":"code","depends_on":[]}]',
+      '',
+      `Request: ${userPrompt}`,
+    ].join('\n');
+
+    // Run planner in a temp directory (avoids CLAUDE.md/GEMINI.md overwrite)
+    const planDir = await mkdtemp(join(tmpdir(), 'orch-plan-'));
+    let planOutput = '';
+
+    try {
+      planOutput = await this._runPlanner(planPrompt, planDir);
+    } finally {
+      await rm(planDir, { recursive: true, force: true });
+    }
+
+    try {
+      const parsed = this._extractJsonArray(planOutput);
+      return this.taskManager.addTasks(
+        parsed.map(t => ({ ...t, type: VALID_TYPES.has(t.type) ? t.type : 'code' }))
+      );
+    } catch {
+      console.error('[orchestrator] Decompose failed, creating single task');
+      return this.taskManager.addTasks([{
+        id: 'T1',
+        title: userPrompt.slice(0, 80),
+        description: userPrompt,
+        type: 'code',
+      }]);
     }
   }
 
   /**
-   * Assign tasks to agents via capability matching with quota-weighted selection.
-   *
-   * Each agent may declare a `quota` in agents.json (e.g. 30 for 30%). Tasks are
-   * distributed proportionally: the agent with the lowest `assignedCount / quota`
-   * ratio is preferred among eligible candidates. Agents without a quota configured
-   * are treated as having equal weight (quota = 1).
-   *
-   * Priority order per task:
-   *   1. Capable agents not previously tried — selected by quota ratio
-   *   2. Any agent not previously tried — selected by quota ratio
-   *   3. Force-assign by quota ratio (avoids getting stuck when all tried)
-   *
-   * @param {import('../types/index.js').Task[]} tasks
+   * Assign pending tasks to agents via capability + quota routing.
+   * @param {Object[]} tasks
+   * @returns {Promise<Object[]>} assigned tasks
    */
   async assignTasks(tasks) {
-    const agentNames = Array.from(this.adapters.keys());
+    const pending = tasks.filter(t => t.status === 'pending');
+    if (pending.length === 0) return [];
 
-    // quota weight per agent (from agents.json config, default 1 for equal weight)
-    const quotas = new Map(
-      agentNames.map((name) => [name, this.adapters.get(name).agentConfig?.quota ?? 1]),
-    );
+    this.router.resetCounts();
+    const assignments = this.router.assign(pending);
+    const assigned = [];
 
-    // running count of tasks assigned to each agent in this batch
-    const assignedCounts = new Map(agentNames.map((name) => [name, 0]));
-
-    /**
-     * Among the given candidates, return the one with the lowest
-     * assignedCount / quota ratio (most "under quota").
-     * @param {string[]} candidates
-     * @returns {string}
-     */
-    const pickByQuota = (candidates) => {
-      let best = candidates[0];
-      let bestRatio = assignedCounts.get(best) / quotas.get(best);
-      for (let i = 1; i < candidates.length; i++) {
-        const name = candidates[i];
-        const ratio = assignedCounts.get(name) / quotas.get(name);
-        if (ratio < bestRatio) {
-          bestRatio = ratio;
-          best = name;
-        }
-      }
-      return best;
-    };
-
-    for (const task of tasks) {
-      const previousAgents = task.previous_agents || [];
-      let agentName = null;
-      let routingNote = '';
-
-      // 1. Prefer a capable agent not previously tried — quota-weighted
-      if (task.type) {
-        const capableFresh = agentNames.filter(
-          (name) => this.adapters.get(name).capabilities.includes(task.type) && !previousAgents.includes(name),
-        );
-        if (capableFresh.length > 0) {
-          agentName = pickByQuota(capableFresh);
-          routingNote = `[${task.type}]`;
-        }
-      }
-
-      // 2. All capable agents exhausted — try any agent not previously tried, quota-weighted
-      if (!agentName) {
-        const freshAgents = agentNames.filter((name) => !previousAgents.includes(name));
-        if (freshAgents.length > 0) {
-          agentName = pickByQuota(freshAgents);
-          routingNote = task.type
-            ? `[${task.type}→fallback, all capable agents tried]`
-            : '[quota]';
-        }
-      }
-
-      // 3. All agents tried — force by quota ratio (task may fail again, but don't get stuck)
-      if (!agentName) {
-        agentName = pickByQuota(agentNames);
-        routingNote = `[${task.type || 'any'}→force, all agents previously tried]`;
-      }
-
-      const isReassignment = previousAgents.length > 0;
-
+    for (const { task, agentName } of assignments) {
       try {
         await this.taskManager.claimTask(task.id, agentName);
-        const branchName = `agent/${agentName}/${task.id}`;
-        await this.taskManager.updateStatus(task.id, 'in_progress', {
-          worktree_branch: branchName,
-        });
-
-        assignedCounts.set(agentName, assignedCounts.get(agentName) + 1);
-
-        if (isReassignment) {
-          console.log(
-            `  ${task.id}: reassigned ${previousAgents.at(-1)} → ${agentName} ` +
-            `(after ${task.retries} failure(s)) ${routingNote}`,
-          );
-        } else {
-          console.log(`  ${task.id}: "${task.title}" → ${agentName} ${routingNote}`);
-        }
-      } catch (error) {
-        console.error(`  Failed to assign ${task.id}: ${error.message}`);
+        const branch = this.worktreeManager.branchName(task.id, agentName);
+        await this.taskManager.updateStatus(task.id, 'in_progress', { worktree_branch: branch, assigned_to: agentName });
+        assigned.push(task.id);
+        console.log(`  [assign] ${task.id} "${task.title}" -> ${agentName}`);
+      } catch (err) {
+        console.error(`  [assign] Failed to assign ${task.id}: ${err.message}`);
       }
     }
+    return assigned;
   }
 
   /**
@@ -339,200 +209,382 @@ export class Orchestrator {
 
     while (true) {
       const allTasks = await this.taskManager.getTasks();
-      await this._handleFailedDependencies(allTasks);
+
+      // Fail tasks whose dependencies failed
+      for (const task of allTasks.filter(t => t.status === 'pending')) {
+        const failedDep = task.depends_on.find(depId => {
+          const dep = allTasks.find(t => t.id === depId);
+          return dep?.status === 'failed';
+        });
+        if (failedDep) {
+          await this.taskManager.updateStatus(task.id, 'failed');
+        }
+      }
 
       if (await this.taskManager.isAllComplete()) break;
 
-      const readyTasks = this._getReadyTasks(allTasks);
-      const inProgress = allTasks.filter(
-        (t) => t.status === 'in_progress' && !dispatched.has(t.id),
-      );
-      const tasksToRun = [...inProgress];
+      const readyTasks = allTasks.filter(t => {
+        if (t.status !== 'pending') return false;
+        return t.depends_on.every(depId => allTasks.find(x => x.id === depId)?.status === 'done');
+      });
+
+      const inProgress = allTasks.filter(t => t.status === 'in_progress' && !dispatched.has(t.id));
+      const toRun = [...inProgress];
 
       if (readyTasks.length > 0) {
         await this.assignTasks(readyTasks);
         const refreshed = await this.taskManager.getTasks();
-        const newlyInProgress = refreshed.filter(
-          (t) => readyTasks.some((r) => r.id === t.id) && t.status === 'in_progress' && !dispatched.has(t.id),
+        const newlyReady = refreshed.filter(t =>
+          readyTasks.some(r => r.id === t.id) && t.status === 'in_progress' && !dispatched.has(t.id)
         );
-        tasksToRun.push(...newlyInProgress);
+        toRun.push(...newlyReady);
       }
 
-      if (tasksToRun.length > 0) {
-        const ids = tasksToRun.map((t) => t.id).join(', ');
-        console.log(`  Wave: starting tasks [${ids}]`);
-        tasksToRun.forEach((t) => dispatched.add(t.id));
-        await Promise.all(tasksToRun.map((task) => this._runTask(task)));
-        tasksToRun.forEach((t) => dispatched.delete(t.id));
+      if (toRun.length > 0) {
+        console.log(`  [wave] starting ${toRun.map(t => t.id).join(', ')}`);
+        toRun.forEach(t => dispatched.add(t.id));
+        await Promise.all(toRun.map(t => this._runTask(t)));
+        toRun.forEach(t => dispatched.delete(t.id));
       } else {
-        const summary = await this.taskManager.getSummary();
-        console.log(
-          `  Progress: ${summary.done} done, ${summary.pending} blocked, ${summary.failed} failed`,
-        );
-        await new Promise((r) => setTimeout(r, this.pollIntervalMs));
+        const s = await this.taskManager.getSummary();
+        console.log(`  [progress] done=${s.done} running=${s.in_progress} pending=${s.pending} failed=${s.failed}`);
+        await new Promise(r => setTimeout(r, this.pollIntervalMs));
       }
     }
   }
 
   /**
-   * Execute a single task by ID. Used by the `execute` verb in chat-driven mode.
+   * Execute a single task by ID.
    * @param {string} taskId
-   * @returns {Promise<import('../types/index.js').TaskResult>}
    */
   async executeTask(taskId) {
-    const allTasks = await this.taskManager.getTasks();
-    const task = allTasks.find((t) => t.id === taskId);
-    if (!task) throw new Error(`Task ${taskId} not found`);
+    const task = await this.taskManager.getTask(taskId);
     return this._runTask(task);
   }
 
   /**
-   * @param {import('../types/index.js').Task[]} tasks
-   * @returns {import('../types/index.js').Task[]}
+   * Merge a completed task's worktree branch into main.
+   * @param {string} taskId
+   * @returns {Promise<Object>}
    */
-  _getReadyTasks(tasks) {
-    return tasks.filter((task) => {
-      if (task.status !== 'pending') return false;
-      if (task.depends_on.length === 0) return true;
-      return task.depends_on.every((depId) => {
-        const dep = tasks.find((t) => t.id === depId);
-        return dep && dep.status === 'done';
-      });
-    });
-  }
-
-  /** @param {import('../types/index.js').Task[]} tasks */
-  async _handleFailedDependencies(tasks) {
-    for (const task of tasks.filter((t) => t.status === 'pending')) {
-      const failedDep = task.depends_on.find((depId) => {
-        const dep = tasks.find((t) => t.id === depId);
-        return dep && dep.status === 'failed';
-      });
-      if (failedDep) {
-        await this.taskManager.updateStatus(task.id, 'failed', {
-          summary: `Skipped: dependency ${failedDep} failed`,
-        });
-      }
+  async acceptTask(taskId) {
+    const task = await this.taskManager.getTask(taskId);
+    const result = await this.worktreeManager.merge(taskId, task.assigned_to);
+    if (result.success) {
+      await this.worktreeManager.prune(taskId, task.assigned_to);
     }
+    return result;
   }
 
   /**
-   * Execute a single task with its assigned adapter.
-   * @param {import('../types/index.js').Task} task
+   * Re-queue a task with rejection reason.
+   * @param {string} taskId
+   * @param {string} reason
+   */
+  async rejectTask(taskId, reason) {
+    return this.taskManager.rejectTask(taskId, reason);
+  }
+
+  /**
+   * Get the git diff for a task's worktree.
+   * @param {string} taskId
+   */
+  async getTaskDiff(taskId) {
+    const task = await this.taskManager.getTask(taskId);
+    return this.worktreeManager.diff(taskId, task.assigned_to ?? 'unknown');
+  }
+
+  /**
+   * Get live logs for a running worker container.
+   * @param {string} taskId
+   * @param {number} [tail=100]
+   */
+  async getTaskLogs(taskId, tail = 100) {
+    const task = await this.taskManager.getTask(taskId);
+    if (!task.container_id) return { stdout: '', stderr: '' };
+    return this.docker.logs(task.container_id, tail);
+  }
+
+  /**
+   * Force-kill a running worker container.
+   * @param {string} taskId
+   */
+  async killTask(taskId) {
+    const task = await this.taskManager.getTask(taskId);
+    if (!task.container_id) return { killed: false };
+    const killed = await this.docker.kill(task.container_id);
+    if (killed) {
+      await this.taskManager.updateStatus(taskId, 'failed').catch(() => {});
+    }
+    return { killed, container_id: task.container_id };
+  }
+
+  /** Hard reset: remove all worktrees, clear task state. */
+  async reset() {
+    await this.worktreeManager.reset();
+    this.taskManager.clear();
+    console.log('[orchestrator] Hard reset complete');
+  }
+
+  // ─── Private ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Execute a task in a Docker container.
+   * @param {Object} task
    */
   async _runTask(task) {
-    const adapter = this.adapters.get(task.assigned_to);
-    if (!adapter) {
-      console.error(`  No adapter for ${task.assigned_to}`);
+    const agentName = task.assigned_to;
+    const agentCfg = this.agents.get(agentName);
+    if (!agentCfg) {
+      console.error(`  [error] No agent config for ${agentName}`);
       return;
     }
 
     try {
-      const worktreePath = join(this.worktreesDir, `${task.assigned_to}-${task.id}`);
-      await this._createWorktree(worktreePath, task.worktree_branch);
+      // Create worktree
+      const { path: worktreePath } = await this.worktreeManager.create(task.id, agentName);
 
-      const context = {
-        workDir: worktreePath,
-        branch: task.worktree_branch,
-        projectRoot: this.projectRoot,
-        teamConfig: { adapters: Array.from(this.adapters.keys()) },
-      };
+      // Write task context file (GEMINI.md or CLAUDE.md) to worktree
+      const ctxFile = agentName === 'gemini' ? 'GEMINI.md' : 'CLAUDE.md';
+      const ctxContent = this._buildContextFile(task, agentName, worktreePath);
+      await writeFile(join(worktreePath, ctxFile), ctxContent, 'utf-8');
 
-      console.log(`  Executing ${task.id} with ${task.assigned_to}...`);
-      const result = await adapter.execute(task, context);
+      // Build CLI prompt
+      const prompt = this._buildPrompt(task, agentName, worktreePath);
+      const cliArgs = agentCfg.cliArgs(prompt);
 
-      const resultPath = join(this.merger.resultsDir, `${task.id}.json`);
-      await writeFile(resultPath, JSON.stringify({
-        task_id: task.id,
-        agent: task.assigned_to,
-        ...result,
-      }, null, 2));
+      console.log(`  [exec] ${task.id} via ${agentName} in Docker`);
+      const containerName = `worker-${agentName}-${task.id}`;
+      // Record container_id without status change — assignTasks already set in_progress
+      this.taskManager.db.prepare('UPDATE tasks SET container_id = ? WHERE id = ?')
+        .run(containerName, task.id);
 
-      await this.taskManager.updateStatus(task.id, result.status, {
-        result_ref: resultPath,
+      // Run in Docker
+      const runResult = await this.docker.run({
+        taskId: task.id,
+        agentName,
+        worktreePath,
+        cliArgs,
+        options: { timeoutMs: agentCfg.timeoutMs, image: agentCfg.image },
       });
 
-      console.log(`  ${task.id} ${result.status}: ${result.summary.slice(0, 100)}`);
-      return result;
-    } catch (error) {
-      console.error(`  ${task.id} error: ${error.message}`);
-      try {
-        await this.taskManager.updateStatus(task.id, 'failed');
-      } catch { /* ignore */ }
-    }
-  }
+      // Parse output
+      const parsed = agentCfg.parseOutput(runResult.stdout, runResult.stderr, runResult.duration_ms);
 
-  /** Poll until all tasks are complete. */
-  async monitorUntilComplete() {
-    while (this._running) {
-      await this.taskManager.resetStaleClaims();
-      if (await this.taskManager.isAllComplete()) break;
+      // Detect changed files via git status in worktree
+      const filesChanged = await this._getChangedFiles(worktreePath);
+      parsed.filesChanged = filesChanged;
 
-      const summary = await this.taskManager.getSummary();
-      console.log(
-        `  Progress: ${summary.done} done, ${summary.in_progress} running, ` +
-        `${summary.pending} pending, ${summary.failed} failed`,
-      );
-      await new Promise((r) => setTimeout(r, this.pollIntervalMs));
-    }
-  }
+      // Auto-commit any uncommitted changes the agent left behind.
+      // Agents are instructed to commit but may fail (no git identity in container,
+      // crash before commit, etc.). This ensures task_diff always has something to show.
+      if (filesChanged.length > 0) {
+        await this._autoCommit(worktreePath, task.id);
+      }
 
-  /** @param {import('../types/index.js').Task[]} tasks */
-  async cleanup(tasks) {
-    for (const task of tasks) {
-      if (task.worktree_branch) {
-        const worktreePath = join(this.worktreesDir, `${task.assigned_to}-${task.id}`);
-        await this.merger.cleanupWorktree(worktreePath, task.worktree_branch);
+      const finalStatus = runResult.exitCode === 0 && parsed.status !== 'failed' ? 'done' : 'failed';
+      const extraFields = parsed.token_usage ? { token_usage: parsed.token_usage } : {};
+      await this.taskManager.updateStatus(task.id, finalStatus, extraFields);
+
+      console.log(`  [${finalStatus}] ${task.id} (${runResult.duration_ms}ms, ${filesChanged.length} files changed)`);
+      return parsed;
+
+    } catch (err) {
+      console.error(`  [error] ${task.id}: ${err.message}`);
+      // Attempt retry
+      const retried = await this.taskManager.retryTask(task.id);
+      if (retried) {
+        console.log(`  [retry] ${task.id} (attempt ${retried.retries})`);
+      } else {
+        await this.taskManager.updateStatus(task.id, 'failed').catch(() => {});
       }
     }
-    console.log('Cleanup complete.');
   }
 
   /**
-   * Load tasks from a JSON file.
-   * @param {string} filePath
-   * @returns {Promise<import('../types/index.js').Task[]>}
+   * Build the task context file content for an agent.
    */
-  async loadTasksFromFile(filePath) {
-    const absolutePath = resolve(filePath);
-    if (!existsSync(absolutePath)) {
-      throw new Error(`Tasks file not found: ${absolutePath}`);
+  _buildContextFile(task, agentName, worktreePath) {
+    return [
+      `# Task Context — ${task.id}`,
+      '',
+      `**Task:** ${task.title}`,
+      `**Type:** ${task.type}`,
+      '',
+      '## Objective',
+      task.description,
+      '',
+      '## Constraints',
+      `- Work only within: ${worktreePath}`,
+      '- Do NOT modify files outside this worktree.',
+      '- Do NOT use save_memory or write to global config files.',
+      '- When done, commit your changes with: git add -A && git commit -m "task: ' + task.id + '"',
+    ].join('\n');
+  }
+
+  /**
+   * Build the CLI prompt for an agent.
+   * Gemini reads GEMINI.md natively — keep prompt minimal.
+   * Claude needs the full context in the prompt.
+   */
+  _buildPrompt(task, agentName, worktreePath) {
+    if (agentName === 'gemini') {
+      return `Task: ${task.title}\n\nPlease complete the task described in GEMINI.md. Commit all changes when done.`;
     }
+    return [
+      `Task: ${task.title}`,
+      '',
+      task.description,
+      '',
+      `Working directory: ${worktreePath}`,
+      '',
+      'Instructions:',
+      '- Complete the task described above.',
+      '- Only modify files relevant to this task.',
+      '- Run git add -A && git commit when done.',
+    ].join('\n');
+  }
+
+  /**
+   * Run the planner to decompose a prompt.
+   * Prefers Gemini (free tier). Falls back to claude CLI on host.
+   */
+  async _runPlanner(prompt, workDir) {
+    // Try Gemini first (free tier — saves Claude quota)
     try {
-      const content = await readFile(absolutePath, 'utf-8');
-      const parsed = JSON.parse(content);
-      const taskList = Array.isArray(parsed) ? parsed : (parsed.tasks || []);
-      if (taskList.length === 0) throw new Error('Tasks file contains no tasks.');
-      return this.taskManager.addTasks(taskList);
-    } catch (error) {
-      if (error instanceof SyntaxError) {
-        throw new Error(`Invalid JSON in tasks file: ${error.message}`);
-      }
-      throw error;
+      return await this._runCLI('gemini', ['-p', prompt, '-y'], workDir, 60_000);
+    } catch {
+      // Fall back to Claude
+      return this._runCLI('claude', ['--print', '-p', prompt, '--output-format', 'json'], workDir, 60_000);
     }
   }
 
   /**
-   * @param {string} worktreePath
-   * @param {string} branchName
+   * Run a CLI command and return stdout.
    */
-  async _createWorktree(worktreePath, branchName) {
-    if (existsSync(worktreePath)) return;
-    await execFileAsync('git', ['worktree', 'add', worktreePath, '-b', branchName], {
-      cwd: this.projectRoot,
+  _runCLI(command, args, cwd, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      let stdout = '';
+      let stderr = '';
+      const cp = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+      cp.stdout.on('data', d => { stdout += d; });
+      cp.stderr.on('data', d => { stderr += d; });
+      const timer = setTimeout(() => { cp.kill(); reject(new Error(`${command} timed out`)); }, timeoutMs);
+      cp.on('exit', () => { clearTimeout(timer); resolve(stdout); });
+      cp.on('error', reject);
     });
   }
 
-  /** @param {string} text */
+  /**
+   * Commit any uncommitted changes left in the worktree after a Docker run.
+   * Skips gracefully if there is nothing to commit or git fails.
+   * @param {string} worktreePath
+   * @param {string} taskId
+   */
+  async _autoCommit(worktreePath, taskId) {
+    const gitOpts = {
+      cwd: worktreePath,
+      timeout: 15_000,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'orchestrator',
+        GIT_AUTHOR_EMAIL: 'orchestrator@localhost',
+        GIT_COMMITTER_NAME: 'orchestrator',
+        GIT_COMMITTER_EMAIL: 'orchestrator@localhost',
+      },
+    };
+    try {
+      await execFileAsync('git', ['add', '-A'], gitOpts);
+      // Check if there's actually anything staged
+      const { stdout } = await execFileAsync('git', ['diff', '--cached', '--name-only'], gitOpts);
+      if (!stdout.trim()) return; // nothing staged after add (e.g. only .gitignore'd files)
+      await execFileAsync('git', ['commit', '-m', `task: ${taskId} (auto-commit by orchestrator)`], gitOpts);
+      console.log(`  [auto-commit] ${taskId} — committed remaining changes`);
+    } catch {
+      // Swallow — e.g. worktree git metadata broken, nothing to commit, etc.
+    }
+  }
+
+  /**
+   * Get files changed in a worktree (git status --porcelain).
+   */
+  async _getChangedFiles(worktreePath) {
+    try {
+      const { stdout } = await execFileAsync('git', ['status', '--porcelain'], { cwd: worktreePath, timeout: 5000 });
+      return stdout.split('\n').map(l => l.slice(3).trim()).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
   _extractJsonArray(text) {
     try {
-      const parsed = JSON.parse(text);
-      if (Array.isArray(parsed)) return parsed;
+      const p = JSON.parse(text);
+      if (Array.isArray(p)) return p;
     } catch { /* continue */ }
-
     const match = text.match(/\[[\s\S]*\]/);
     if (match) return JSON.parse(match[0]);
-
-    throw new Error('No JSON array found in output');
+    throw new Error('No JSON array found in planner output');
   }
+
+  async _loadAgentsJson() {
+    const path = join(this.projectRoot, 'agents.json');
+    if (!existsSync(path)) return {};
+    try { return JSON.parse(await readFile(path, 'utf-8')); } catch { return {}; }
+  }
+}
+
+// ─── Output parsers (extracted from old adapters) ────────────────────────────
+
+function parseClaudeOutput(stdout, stderr, duration_ms) {
+  try {
+    const parsed = JSON.parse(stdout);
+    const isError = parsed.is_error === true;
+    const summary = parsed.result ?? parsed.text ??
+      (Array.isArray(parsed.content) ? parsed.content.filter(i => i.type === 'text').map(i => i.text).join('') : '') ??
+      stdout.slice(0, 500);
+    const token_usage = parsed.usage ? {
+      input: parsed.usage.input_tokens,
+      output: parsed.usage.output_tokens,
+      cache_read: parsed.usage.cache_read_input_tokens,
+      cost_usd: parsed.total_cost_usd,
+    } : undefined;
+    return { status: isError ? 'failed' : 'done', summary, filesChanged: [], output: stdout, duration_ms, token_usage };
+  } catch {
+    return { status: 'done', summary: stdout.slice(0, 500), filesChanged: [], output: stdout, duration_ms };
+  }
+}
+
+function parseGeminiOutput(stdout, stderr, duration_ms) {
+  const trimmed = stdout.trim();
+  if (!trimmed) return { status: 'done', summary: '', filesChanged: [], output: stdout, duration_ms };
+
+  // Try 3-strategy JSON extraction (handles pretty-printed, NDJSON, noisy output)
+  let parsed = null;
+  try { parsed = JSON.parse(trimmed); } catch { /* try next */ }
+  if (!parsed && trimmed.includes('\n')) {
+    for (const line of trimmed.split('\n').reverse()) {
+      try { parsed = JSON.parse(line); break; } catch { /* try next */ }
+    }
+  }
+  if (!parsed) {
+    const s = trimmed.indexOf('{'), e = trimmed.lastIndexOf('}');
+    if (s !== -1 && e > s) { try { parsed = JSON.parse(trimmed.slice(s, e + 1)); } catch { /* fail */ } }
+  }
+
+  if (parsed) {
+    const summary = parsed.response ?? parsed.text ??
+      (Array.isArray(parsed.candidates) ? parsed.candidates[0]?.content?.parts?.map(p => p.text).join('') : null) ??
+      trimmed.slice(0, 500);
+    return { status: 'done', summary, filesChanged: [], output: stdout, duration_ms };
+  }
+
+  // Non-JSON = task likely didn't complete properly
+  return {
+    status: trimmed.length > 20 ? 'done' : 'failed',
+    summary: trimmed.slice(0, 500),
+    filesChanged: [],
+    output: stdout,
+    duration_ms,
+  };
 }

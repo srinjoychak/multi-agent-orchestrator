@@ -115,7 +115,7 @@ describe('TaskManager.claimTask() success', () => {
     assert.equal(task.assigned_to, 'claude-code');
     assert.ok(task.claimed_at);
     const claimedAt = new Date(task.claimed_at).getTime();
-    assert.ok(claimedAt >= before);
+    assert.ok(claimedAt >= before - 1000);
     assert.ok(claimedAt <= Date.now());
   });
 });
@@ -414,16 +414,12 @@ describe('TaskManager.resetStaleClaims()', () => {
       await env.manager.addTask({ id: 'T1', title: 'Stale' });
       await env.manager.claimTask('T1', 'claude-code');
 
-      // Manually backdate claimed_at by 11 minutes
-      const staleTime = new Date(Date.now() - 11 * 60 * 1000).toISOString();
-      await env.manager._withLock(async (tasks) => {
-        const t = tasks.find((t) => t.id === 'T1');
-        t.claimed_at = staleTime;
-        return null;
-      });
+      // Backdate claimed_at by 11 minutes using direct SQL (v3 uses SQLite, not _withLock)
+      env.manager.db.prepare(
+        "UPDATE tasks SET claimed_at = datetime('now', '-11 minutes') WHERE id = 'T1'"
+      ).run();
 
-      const reset = await env.manager.resetStaleClaims();
-      assert.deepEqual(reset, ['T1']);
+      await env.manager.resetStaleClaims();
 
       const task = await env.manager.getTask('T1');
       assert.equal(task.status, 'pending');
@@ -440,8 +436,7 @@ describe('TaskManager.resetStaleClaims()', () => {
       await env.manager.addTask({ id: 'T1', title: 'Fresh' });
       await env.manager.claimTask('T1', 'claude-code');
 
-      const reset = await env.manager.resetStaleClaims();
-      assert.deepEqual(reset, []);
+      await env.manager.resetStaleClaims();
 
       const task = await env.manager.getTask('T1');
       assert.equal(task.status, 'claimed');

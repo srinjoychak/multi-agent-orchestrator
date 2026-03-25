@@ -1,301 +1,315 @@
-import { readFile, writeFile, unlink } from 'node:fs/promises';
-import { existsSync, statSync } from 'node:fs';
-import { join } from 'node:path';
-import { createTask, isValidTransition } from '../types/index.js';
-
 /**
- * Manages the shared task list stored as a JSON file.
+ * Task Manager — SQLite-backed task state machine.
  *
- * All mutations go through this class to enforce:
- * - Valid state transitions
- * - File-level locking (prevents race conditions)
- * - Dependency resolution
+ * Replaces the JSON+lockfile implementation with better-sqlite3,
+ * giving ACID transactions and concurrent-write safety for parallel workers.
+ *
+ * State machine:
+ *   pending -> claimed -> in_progress -> done
+ *                  |            |
+ *                  v            v
+ *               pending      failed -> pending (retry, up to max_retries)
+ *
+ * Rejection re-queues: done -> pending (with rejection reason appended).
  */
+
+import Database from 'better-sqlite3';
+import { join, dirname } from 'node:path';
+import { readFileSync, existsSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SCHEMA_PATH = join(__dirname, 'schema.sql');
+
+const VALID_TYPES = new Set(['code', 'refactor', 'test', 'review', 'debug', 'research', 'docs', 'analysis']);
+const VALID_STATUSES = new Set(['pending', 'claimed', 'in_progress', 'done', 'failed']);
+
+const VALID_TRANSITIONS = new Map([
+  ['pending',     new Set(['claimed'])],
+  ['claimed',     new Set(['in_progress', 'pending'])],
+  ['in_progress', new Set(['done', 'failed'])],
+  ['done',        new Set(['pending'])],
+  ['failed',      new Set(['pending'])],
+]);
+
 export class TaskManager {
-  /**
-   * @param {string} baseDir - Path to .agent-team directory
-   */
-  constructor(baseDir) {
-    this.baseDir = baseDir;
-    this.tasksFile = join(baseDir, 'tasks.json');
-    this._lockFile = join(baseDir, 'tasks.lock');
+  /** @param {string} stateDir — directory where tasks.db will be stored */
+  constructor(stateDir) {
+    this.stateDir = stateDir;
+    this.dbPath = join(stateDir, 'tasks.db');
+    /** @type {import('better-sqlite3').Database|null} */
+    this.db = null;
   }
 
-  /**
-   * Initialize the task list file if it doesn't exist.
-   */
+  /** Initialize: create state directory and open the SQLite database. */
   async initialize() {
-    if (!existsSync(this.tasksFile)) {
-      await writeFile(this.tasksFile, JSON.stringify({ tasks: [] }, null, 2));
+    if (!existsSync(this.stateDir)) {
+      await mkdir(this.stateDir, { recursive: true });
     }
+    this.db = new Database(this.dbPath);
+    this.db.pragma('journal_mode = WAL');
+    this.db.pragma('foreign_keys = ON');
+    this.db.exec(readFileSync(SCHEMA_PATH, 'utf-8'));
   }
 
   /**
-   * Read all tasks.
-   * @returns {Promise<import('../types/index.js').Task[]>}
+   * Add a single task.
+   * @param {Object} taskData
+   * @returns {Object}
    */
-  async getTasks() {
-    const content = await readFile(this.tasksFile, 'utf-8');
-    const data = JSON.parse(content);
-    return data.tasks || [];
+  async addTask(taskData) {
+    const task = this._normalise(taskData);
+    this.db.prepare(`
+      INSERT INTO tasks (id, title, description, type, status, depends_on, max_retries)
+      VALUES (@id, @title, @description, @type, 'pending', @depends_on, @max_retries)
+    `).run({
+      id: task.id,
+      title: task.title,
+      description: task.description ?? '',
+      type: task.type,
+      depends_on: JSON.stringify(task.depends_on ?? []),
+      max_retries: task.max_retries ?? 3,
+    });
+    return this.getTask(task.id);
+  }
+
+  /**
+   * Add multiple tasks in a single transaction.
+   * @param {Object[]} tasks
+   * @returns {Object[]}
+   */
+  async addTasks(tasks) {
+    const stmt = this.db.prepare(`
+      INSERT OR IGNORE INTO tasks (id, title, description, type, status, depends_on, max_retries)
+      VALUES (@id, @title, @description, @type, 'pending', @depends_on, @max_retries)
+    `);
+    this.db.transaction((rows) => {
+      for (const row of rows) {
+        const t = this._normalise(row);
+        stmt.run({
+          id: t.id,
+          title: t.title,
+          description: t.description ?? '',
+          type: t.type,
+          depends_on: JSON.stringify(t.depends_on ?? []),
+          max_retries: t.max_retries ?? 3,
+        });
+      }
+    })(tasks);
+    return this.getTasks();
   }
 
   /**
    * Get a single task by ID.
-   * @param {string} taskId
-   * @returns {Promise<import('../types/index.js').Task|null>}
+   * @param {string} id
+   * @returns {Object}
    */
-  async getTask(taskId) {
-    const tasks = await this.getTasks();
-    return tasks.find((t) => t.id === taskId) || null;
+  async getTask(id) {
+    const row = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+    if (!row) throw new Error(`Task ${id} not found`);
+    return this._deserialise(row);
+  }
+
+  /** Get all tasks. @returns {Object[]} */
+  async getTasks() {
+    return this.db.prepare('SELECT * FROM tasks ORDER BY created_at').all().map(r => this._deserialise(r));
   }
 
   /**
-   * Add a new task to the list.
-   * @param {Partial<import('../types/index.js').Task>} taskData
-   * @returns {Promise<import('../types/index.js').Task>}
-   */
-  async addTask(taskData) {
-    return this._withLock(async (tasks) => {
-      const task = createTask(taskData);
-      tasks.push(task);
-      return task;
-    });
-  }
-
-  /**
-   * Add multiple tasks at once.
-   * @param {Partial<import('../types/index.js').Task>[]} taskDataList
-   * @returns {Promise<import('../types/index.js').Task[]>}
-   */
-  async addTasks(taskDataList) {
-    return this._withLock(async (tasks) => {
-      const newTasks = taskDataList.map((td) => createTask(td));
-      tasks.push(...newTasks);
-      return newTasks;
-    });
-  }
-
-  /**
-   * Claim a task for an agent. Atomic operation with locking.
-   * @param {string} taskId
-   * @param {string} agentName
-   * @returns {Promise<import('../types/index.js').Task>}
-   * @throws {Error} if task is not claimable
+   * Claim a task (pending -> claimed) for an agent.
+   * Uses a transaction to prevent double-claiming.
    */
   async claimTask(taskId, agentName) {
-    return this._withLock(async (tasks) => {
-      const task = tasks.find((t) => t.id === taskId);
+    this.db.transaction(() => {
+      const task = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
       if (!task) throw new Error(`Task ${taskId} not found`);
-      if (task.status !== 'pending') {
-        throw new Error(`Task ${taskId} is ${task.status}, cannot claim`);
+      if (task.status !== 'pending') throw new Error(`Task ${taskId} is ${task.status}, cannot claim`);
+
+      // Check dependency blockers
+      const deps = JSON.parse(task.depends_on || '[]');
+      if (deps.length > 0) {
+        for (const depId of deps) {
+          const dep = this.db.prepare('SELECT status FROM tasks WHERE id = ?').get(depId);
+          if (!dep || dep.status !== 'done') {
+            throw new Error(`Task ${taskId} is blocked by dependency ${depId}`);
+          }
+        }
       }
 
-      // Check dependencies
-      const blocked = this._getBlockingDeps(task, tasks);
-      if (blocked.length > 0) {
-        throw new Error(
-          `Task ${taskId} is blocked by: ${blocked.join(', ')}`,
-        );
-      }
-
-      task.status = 'claimed';
-      task.assigned_to = agentName;
-      task.claimed_at = new Date().toISOString();
-      return task;
-    });
+      this.db.prepare(`
+        UPDATE tasks SET status='claimed', assigned_to=?, claimed_at=datetime('now')
+        WHERE id=? AND status='pending'
+      `).run(agentName, taskId);
+    })();
+    return this.getTask(taskId);
   }
 
   /**
-   * Update task status with validation.
-   * @param {string} taskId
-   * @param {import('../types/index.js').TaskStatus} newStatus
-   * @param {Object} [updates={}] - Additional fields to update
-   * @returns {Promise<import('../types/index.js').Task>}
+   * Update a task's status and optional fields.
+   * Validates against the state machine.
    */
-  async updateStatus(taskId, newStatus, updates = {}) {
-    return this._withLock(async (tasks) => {
-      const task = tasks.find((t) => t.id === taskId);
+  async updateStatus(taskId, newStatus, fields = {}) {
+    if (!VALID_STATUSES.has(newStatus)) throw new Error(`Invalid status: ${newStatus}`);
+
+    this.db.transaction(() => {
+      const task = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
       if (!task) throw new Error(`Task ${taskId} not found`);
 
-      if (!isValidTransition(task.status, newStatus)) {
-        throw new Error(
-          `Invalid transition: ${task.status} → ${newStatus} for task ${taskId}`,
-        );
+      const allowed = VALID_TRANSITIONS.get(task.status);
+      if (!allowed?.has(newStatus)) {
+        throw new Error(`Invalid transition ${task.status} -> ${newStatus} for task ${taskId}`);
       }
 
-      task.status = newStatus;
+      const setClauses = ['status = @status'];
+      const params = { id: taskId, status: newStatus };
 
       if (newStatus === 'done' || newStatus === 'failed') {
-        task.completed_at = new Date().toISOString();
+        setClauses.push("completed_at = datetime('now')");
       }
+      for (const [key, val] of Object.entries(fields)) {
+        if (['worktree_branch','container_id','result_ref','assigned_to'].includes(key)) {
+          setClauses.push(`${key} = @${key}`);
+          params[key] = val;
+        } else if (key === 'token_usage') {
+          setClauses.push('token_usage = @token_usage');
+          params.token_usage = JSON.stringify(val);
+        }
+      }
+      this.db.prepare(`UPDATE tasks SET ${setClauses.join(', ')} WHERE id = @id`).run(params);
 
+      // Auto-retry on failure if retries < max_retries
       if (newStatus === 'failed') {
-        // Record the failing agent before clearing assignment
-        if (task.assigned_to && !task.previous_agents?.includes(task.assigned_to)) {
-          task.previous_agents = [...(task.previous_agents || []), task.assigned_to];
-        }
-
-        if (task.retries < task.max_retries) {
-          // Auto-retry: reset to pending for reassignment to a different agent
-          task.retries += 1;
-          task.status = 'pending';
-          task.assigned_to = null;
-          task.claimed_at = null;
-          task.completed_at = null;
+        const updated = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
+        if (updated.retries < updated.max_retries) {
+          const prev = JSON.parse(updated.previous_agents ?? '[]');
+          if (updated.assigned_to && !prev.includes(updated.assigned_to)) prev.push(updated.assigned_to);
+          this.db.prepare(`
+            UPDATE tasks SET status='pending', assigned_to=NULL, claimed_at=NULL,
+              completed_at=NULL, container_id=NULL, retries=retries+1, previous_agents=?
+            WHERE id=?
+          `).run(JSON.stringify(prev), taskId);
         }
       }
-
-      Object.assign(task, updates);
-      return task;
-    });
+    })();
+    return this.getTask(taskId);
   }
 
-  /**
-   * Get all tasks available for claiming (pending, unblocked).
-   * @returns {Promise<import('../types/index.js').Task[]>}
-   */
-  async getClaimableTasks() {
-    const tasks = await this.getTasks();
-    return tasks.filter((t) => {
-      if (t.status !== 'pending') return false;
-      return this._getBlockingDeps(t, tasks).length === 0;
-    });
+  /** Reject a completed task: re-queue as pending with reason appended. */
+  async rejectTask(taskId, reason) {
+    this.db.transaction(() => {
+      const task = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
+      if (!task) throw new Error(`Task ${taskId} not found`);
+      if (task.status !== 'done') throw new Error(`Can only reject done tasks, ${taskId} is ${task.status}`);
+
+      const prev = JSON.parse(task.previous_agents ?? '[]');
+      if (task.assigned_to && !prev.includes(task.assigned_to)) prev.push(task.assigned_to);
+
+      this.db.prepare(`
+        UPDATE tasks SET
+          status='pending', assigned_to=NULL, claimed_at=NULL,
+          completed_at=NULL, container_id=NULL,
+          description=description || '\n\n[REJECTED] ' || ?,
+          previous_agents=?
+        WHERE id=?
+      `).run(reason, JSON.stringify(prev), taskId);
+    })();
+    return this.getTask(taskId);
+  }
+
+  /** Retry a failed task. Returns null if max_retries exceeded. */
+  async retryTask(taskId) {
+    let result = null;
+    this.db.transaction(() => {
+      const task = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
+      if (!task || task.status !== 'failed') return;
+      if (task.retries >= task.max_retries) return;
+
+      const prev = JSON.parse(task.previous_agents ?? '[]');
+      if (task.assigned_to && !prev.includes(task.assigned_to)) prev.push(task.assigned_to);
+
+      this.db.prepare(`
+        UPDATE tasks SET status='pending', assigned_to=NULL, claimed_at=NULL,
+          completed_at=NULL, container_id=NULL, retries=retries+1, previous_agents=?
+        WHERE id=?
+      `).run(JSON.stringify(prev), taskId);
+
+      result = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
+    })();
+    return result ? this._deserialise(result) : null;
   }
 
   /**
    * Get all tasks assigned to a specific agent.
    * @param {string} agentName
-   * @returns {Promise<import('../types/index.js').Task[]>}
+   * @returns {Object[]}
    */
   async getTasksByAgent(agentName) {
-    const tasks = await this.getTasks();
-    return tasks.filter((t) => t.assigned_to === agentName);
+    return this.db.prepare('SELECT * FROM tasks WHERE assigned_to = ? ORDER BY created_at')
+      .all(agentName)
+      .map(r => this._deserialise(r));
   }
 
-  /**
-   * Reset stale claimed tasks (claimed_at > 10 min ago) back to pending.
-   * @returns {Promise<string[]>} - IDs of reset tasks
-   */
+  /** Reset stale claims (claimed > 10 min ago) back to pending. */
   async resetStaleClaims() {
-    return this._withLock(async (tasks) => {
-      const STALE_MS = 10 * 60 * 1000; // 10 minutes
-      const now = Date.now();
-      const reset = [];
-      for (const task of tasks) {
-        if (
-          task.status === 'claimed' &&
-          task.claimed_at &&
-          now - new Date(task.claimed_at).getTime() > STALE_MS
-        ) {
-          task.status = 'pending';
-          task.assigned_to = null;
-          task.claimed_at = null;
-          reset.push(task.id);
-        }
-      }
-      return reset;
+    this.db.prepare(`
+      UPDATE tasks SET status='pending', assigned_to=NULL, claimed_at=NULL
+      WHERE status='claimed' AND claimed_at < datetime('now', '-10 minutes')
+    `).run();
+  }
+
+  /** Check if all tasks are in a terminal state. @returns {boolean} */
+  async isAllComplete() {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) as cnt FROM tasks WHERE status NOT IN ('done','failed')
+    `).get();
+    return row.cnt === 0;
+  }
+
+  /** Get status summary. */
+  async getSummary() {
+    const rows = this.db.prepare('SELECT status, COUNT(*) as cnt FROM tasks GROUP BY status').all();
+    const s = { pending: 0, claimed: 0, in_progress: 0, done: 0, failed: 0, total: 0 };
+    for (const row of rows) { s[row.status] = row.cnt; s.total += row.cnt; }
+    return s;
+  }
+
+  /** Get pending tasks whose dependencies are all done. */
+  async getClaimableTasks() {
+    const tasks = await this.getTasks();
+    return tasks.filter(t => {
+      if (t.status !== 'pending') return false;
+      return t.depends_on.every(dep => tasks.find(x => x.id === dep)?.status === 'done');
     });
   }
 
-  /**
-   * Get task completion summary.
-   * @returns {Promise<{total: number, pending: number, in_progress: number, done: number, failed: number}>}
-   */
-  async getSummary() {
-    const tasks = await this.getTasks();
+  /** Clear all tasks. */
+  clear() { this.db.prepare('DELETE FROM tasks').run(); }
+
+  /** Close the database. */
+  close() { this.db?.close(); this.db = null; }
+
+  _normalise(data) {
     return {
-      total: tasks.length,
-      pending: tasks.filter((t) => t.status === 'pending').length,
-      claimed: tasks.filter((t) => t.status === 'claimed').length,
-      in_progress: tasks.filter((t) => t.status === 'in_progress').length,
-      done: tasks.filter((t) => t.status === 'done').length,
-      failed: tasks.filter((t) => t.status === 'failed').length,
+      ...data,
+      id: data.id ?? `T${Date.now()}`,
+      title: data.title ?? 'Untitled task',
+      type: VALID_TYPES.has(data.type) ? data.type : 'code',
+      depends_on: Array.isArray(data.depends_on) ? data.depends_on : [],
+      max_retries: data.max_retries ?? 3,
     };
   }
 
-  /**
-   * Check if all tasks are complete (done or permanently failed).
-   * @returns {Promise<boolean>}
-   */
-  async isAllComplete() {
-    const summary = await this.getSummary();
-    return summary.pending === 0 && summary.claimed === 0 && summary.in_progress === 0;
+  _deserialise(row) {
+    return {
+      ...row,
+      depends_on: this._json(row.depends_on, []),
+      previous_agents: this._json(row.previous_agents, []),
+      token_usage: this._json(row.token_usage, {}),
+    };
   }
 
-  // -- Private helpers --
-
-  /**
-   * Get list of unresolved dependency task IDs.
-   * @param {import('../types/index.js').Task} task
-   * @param {import('../types/index.js').Task[]} allTasks
-   * @returns {string[]}
-   */
-  _getBlockingDeps(task, allTasks) {
-    return task.depends_on.filter((depId) => {
-      const dep = allTasks.find((t) => t.id === depId);
-      return !dep || dep.status !== 'done';
-    });
-  }
-
-  /**
-   * Execute a mutation with file locking.
-   * Uses a simple lock file approach for v1.
-   *
-   * @param {function(import('../types/index.js').Task[]): Promise<*>} mutator
-   * @returns {Promise<*>}
-   */
-  async _withLock(mutator) {
-    // Simple file-based locking for v1
-    // For production, use proper-lockfile package
-    const maxAttempts = 10;
-    const retryDelay = 100;
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      try {
-        // Check if locked
-        if (existsSync(this._lockFile)) {
-          // Check lock age — stale locks older than 30s are broken
-          const { mtimeMs } = statSync(this._lockFile);
-          if (Date.now() - mtimeMs > 30_000) {
-            await unlink(this._lockFile);
-          } else {
-            await new Promise((r) => setTimeout(r, retryDelay));
-            continue;
-          }
-        }
-
-        // Acquire lock
-        await writeFile(this._lockFile, String(process.pid));
-
-        // Read current state
-        const content = await readFile(this.tasksFile, 'utf-8');
-        const data = JSON.parse(content);
-        const tasks = data.tasks || [];
-
-        // Apply mutation
-        const result = await mutator(tasks);
-
-        // Write back
-        await writeFile(this.tasksFile, JSON.stringify({ tasks }, null, 2));
-
-        // Release lock
-        if (existsSync(this._lockFile)) {
-          await unlink(this._lockFile);
-        }
-
-        return result;
-      } catch (error) {
-        // Release lock on error
-        try {
-          if (existsSync(this._lockFile)) {
-            await unlink(this._lockFile);
-          }
-        } catch { /* ignore cleanup errors */ }
-        throw error;
-      }
-    }
-
-    throw new Error('Failed to acquire task lock after maximum attempts');
+  _json(str, fallback) {
+    try { return JSON.parse(str); } catch { return fallback; }
   }
 }
