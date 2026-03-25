@@ -111,4 +111,23 @@ export class AgentRouter {
     const caps = this.adapters.get(agentName)?.capabilities ?? [];
     return caps.includes(taskType);
   }
+
+  /**
+   * Validate an array of agent configs.
+   * @param {Object[]} agents
+   * @throws {Error} if any agent is invalid
+   */
+  static validate(agents) {
+    for (const agent of agents) {
+      if (typeof agent.name !== 'string' || agent.name === '') {
+        throw new Error(`Agent must have a non-empty string 'name': ${JSON.stringify(agent)}`);
+      }
+      if (!Array.isArray(agent.capabilities) || agent.capabilities.length === 0) {
+        throw new Error(`Agent '${agent.name}' must have a non-empty 'capabilities' array`);
+      }
+      if (typeof agent.quota !== 'number' || agent.quota < 0 || agent.quota > 100) {
+        throw new Error(`Agent '${agent.name}' must have a 'quota' number between 0 and 100`);
+      }
+    }
+  }
 }
