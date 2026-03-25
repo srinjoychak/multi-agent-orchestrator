@@ -344,9 +344,9 @@ export class Orchestrator {
       // Create worktree
       const { path: worktreePath } = await this.worktreeManager.create(task.id, agentName);
 
-      // Write task context file — use a name that won't collide with project files
-      // (CLAUDE.md / GEMINI.md are reserved for project-level instructions)
-      const ctxFile = '.task-context.md';
+      // Write task context file — visible to agent read_file (no dot prefix),
+      // won't collide with project files (CLAUDE.md / GEMINI.md are reserved)
+      const ctxFile = 'TASK_CONTEXT.md';
       const ctxContent = this._buildContextFile(task, agentName, worktreePath);
       await writeFile(join(worktreePath, ctxFile), ctxContent, 'utf-8');
 
@@ -422,7 +422,7 @@ export class Orchestrator {
       '',
       '## Git Instructions',
       '- This directory is a git worktree. Use shell commands (run_shell_command) for all git operations.',
-      '- Do NOT attempt to read the .git file directly — it is a worktree pointer and will be ignored.',
+      '- Do NOT attempt to read the .git file directly — it is a worktree pointer.',
       '- To commit: run_shell_command("git add -A && git commit -m \\"task: ' + task.id + '\\"") ',
       '- Git identity is pre-configured — no need to set user.name or user.email.',
     ].join('\n');
@@ -435,7 +435,7 @@ export class Orchestrator {
    */
   _buildPrompt(task, agentName, worktreePath) {
     if (agentName === 'gemini') {
-      return `Task: ${task.title}\n\nPlease complete the task described in .task-context.md. Commit all changes when done.`;
+      return `Task: ${task.title}\n\nPlease complete the task described in TASK_CONTEXT.md. Commit all changes when done.`;
     }
     return [
       `Task: ${task.title}`,

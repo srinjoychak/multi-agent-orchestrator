@@ -9,4 +9,4 @@ node_modules/
 GEMINI_TASK_*.md
 GEMINI_TECH_LEAD.md
 *-catalog.yaml
-.task-context.md
+TASK_CONTEXT.md
