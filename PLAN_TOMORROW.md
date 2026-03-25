@@ -89,7 +89,27 @@ Three modules to build (source + tests):
 - `src/monitor/index.js` — WorkforceMonitor (poll containers, kill stuck workers)
 - `src/logger/index.js` — Logger (tagged structured logging to stderr)
 
-Assign to Gemini (research + code). Expected: ~20 new tests, total ~97 pass.
+**How to dispatch P4 via workforce** — use THREE separate `orchestrate()` calls (one per module).
+Do NOT use a single call for all three: the planner will compress the interface specs and workers
+will invent their own APIs. Each call must include the full interface inline. Example:
+
+```
+orchestrate("Implement src/tracker/index.js — TokenTracker class for the v3 orchestrator.
+Read src/taskmanager/index.js and src/taskmanager/schema.sql first (token_usage column exists).
+Interface (all methods async):
+  constructor(taskManager)
+  parseClaude(stdout) → { input, output, cache_read, cost_usd } | null  [parse Claude JSON output]
+  parseGemini(stdout, prompt) → { input_est, output_est, cost_usd:0 }   [estimate: chars/4]
+  record(taskId, usage) → direct SQL: UPDATE tasks SET token_usage=? WHERE id=?
+  summaryByAgent() → query tasks, aggregate by assigned_to
+  totalCost() → { totalCost, taskCount }
+Also create src/tracker/tracker.test.js using node:test (NOT jest).
+Run npm test — all tests must pass 0 failures.")
+```
+
+Repeat for WorkforceMonitor and Logger using the full specs in `GEMINI_TASK_P4_PHASE3_MODULES.md`.
+Each module lands in its own directory (no merge conflicts between parallel tasks).
+Expected total after P4: ~97 tests passing.
 
 ### 3. P5 — E2E Smoke Tests
 See `GEMINI_TASK_P5_E2E_TEST.md` — still valid with TWO updates:
@@ -100,7 +120,20 @@ Deliverables:
 - `tests/e2e/e2e-test-plan.md` — test plan for all 8 MCP tools
 - `tests/e2e/smoke.sh` (or `smoke.mjs`) — automated smoke test via JSON-RPC over stdio
 
-Assign to Gemini (docs + research).
+**How to dispatch P5 via workforce** — single `orchestrate()` call is fine:
+the two files are docs/scripts with no interface precision requirements.
+
+```
+orchestrate("Create two files for E2E testing the orchestrator MCP server:
+1. tests/e2e/e2e-test-plan.md — test plan covering all 8 MCP tools (orchestrate, task_status,
+   task_diff, task_accept, task_reject, task_logs, task_kill, workforce_status). Include:
+   prerequisites, smoke tests (SMOKE-01 to SMOKE-07), integration tests (INT-01 to INT-05),
+   error handling tests, and a regression checklist.
+2. tests/e2e/smoke.mjs — Node.js smoke test script using child_process.spawn to communicate
+   with the MCP server over stdio JSON-RPC. Test initialize handshake, tools/list (8 tools),
+   task_status empty board, workforce_status, and error cases for nonexistent task IDs.
+   Print PASS/FAIL per test. Exit code = number of failures.")
+```
 
 ---
 
