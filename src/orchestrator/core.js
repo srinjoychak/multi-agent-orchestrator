@@ -344,8 +344,9 @@ export class Orchestrator {
       // Create worktree
       const { path: worktreePath } = await this.worktreeManager.create(task.id, agentName);
 
-      // Write task context file (GEMINI.md or CLAUDE.md) to worktree
-      const ctxFile = agentName === 'gemini' ? 'GEMINI.md' : 'CLAUDE.md';
+      // Write task context file — use a name that won't collide with project files
+      // (CLAUDE.md / GEMINI.md are reserved for project-level instructions)
+      const ctxFile = '.task-context.md';
       const ctxContent = this._buildContextFile(task, agentName, worktreePath);
       await writeFile(join(worktreePath, ctxFile), ctxContent, 'utf-8');
 
@@ -429,7 +430,7 @@ export class Orchestrator {
    */
   _buildPrompt(task, agentName, worktreePath) {
     if (agentName === 'gemini') {
-      return `Task: ${task.title}\n\nPlease complete the task described in GEMINI.md. Commit all changes when done.`;
+      return `Task: ${task.title}\n\nPlease complete the task described in .task-context.md. Commit all changes when done.`;
     }
     return [
       `Task: ${task.title}`,
