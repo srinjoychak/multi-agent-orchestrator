@@ -13,8 +13,11 @@
 
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { dirname, join as pathJoin } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const execFileAsync = promisify(execFile);
+const __dir = dirname(fileURLToPath(import.meta.url));
 
 /** Default auth directory paths on the host (WSL) */
 const AUTH_DIRS = {
@@ -26,6 +29,14 @@ const AUTH_DIRS = {
 const AUTH_MOUNTS = {
   gemini: '/home/node/.gemini',
   'claude-code': '/home/node/.claude',
+};
+
+/**
+ * Worker-safe settings files — mounted over the auth dir's settings.json
+ * to prevent host MCP configs (with host-only paths) from breaking workers.
+ */
+const WORKER_SETTINGS_HOST = {
+  gemini: pathJoin(__dir, '../../docker/workers/config/gemini-settings.json'),
 };
 
 export class DockerRunner {
@@ -78,6 +89,13 @@ export class DockerRunner {
       // Gemini needs rw (writes user_id, state), Claude can be ro
       const mode = agentName === 'gemini' ? 'rw' : 'ro';
       dockerArgs.push('-v', `${authDir}:${authMount}:${mode}`);
+
+      // Override settings.json inside the container so workers don't inherit
+      // host MCP server configs (host paths don't exist inside the container)
+      const workerSettings = WORKER_SETTINGS_HOST[agentName];
+      if (workerSettings) {
+        dockerArgs.push('-v', `${workerSettings}:${authMount}/settings.json:ro`);
+      }
     }
 
     dockerArgs.push(image, ...cliArgs);

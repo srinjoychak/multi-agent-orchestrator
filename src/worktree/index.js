@@ -10,7 +10,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { rm, readFile, writeFile } from 'node:fs/promises';
 
 const execFileAsync = promisify(execFile);
 
@@ -21,6 +21,22 @@ export class WorktreeManager {
   constructor(projectRoot) {
     this.projectRoot = projectRoot;
     this.worktreesDir = join(projectRoot, '.worktrees');
+    this._baseBranch = null; // lazily resolved
+  }
+
+  /**
+   * Resolve the base branch (main or master) once and cache it.
+   * @returns {Promise<string>}
+   */
+  async _getBaseBranch() {
+    if (this._baseBranch) return this._baseBranch;
+    try {
+      const { stdout } = await this._git(['branch', '--list', 'main']);
+      this._baseBranch = stdout.trim() ? 'main' : 'master';
+    } catch {
+      this._baseBranch = 'master';
+    }
+    return this._baseBranch;
   }
 
   /**
@@ -55,9 +71,53 @@ export class WorktreeManager {
     const branch = this.branchName(taskId, agentName);
 
     if (!existsSync(path)) {
-      await this._git(['worktree', 'add', path, '-b', branch]);
+      const base = await this._getBaseBranch();
+      // Delete stale branch if it exists without a worktree (from a prior failed run)
+      await this._git(['branch', '-D', branch]).catch(() => {});
+      // Always branch from the base (master/main) so task diffs are clean
+      await this._git(['worktree', 'add', path, '-b', branch, base]);
+      // On WSL with /mnt/d/ paths, git writes Windows-style paths (D:/) into
+      // the worktree's .git file and .git/worktrees/ metadata. Patch them to
+      // use POSIX WSL paths so all subsequent git commands work correctly.
+      await this._fixWslPaths(path, branch);
     }
     return { path, branch };
+  }
+
+  /**
+   * Rewrite any Windows-style drive paths (D:/) in worktree git metadata
+   * to their WSL equivalents (/mnt/d/). No-op on native Linux.
+   * @param {string} worktreePath
+   * @param {string} branch
+   */
+  async _fixWslPaths(worktreePath, branch) {
+    const winDriveRe = /([A-Za-z]):\//g;
+    const toWsl = (s) => s.replace(winDriveRe, (_, d) => `/mnt/${d.toLowerCase()}/`);
+
+    // 1) Fix <worktree>/.git (plain file pointing at the main repo's worktree entry)
+    const dotGit = join(worktreePath, '.git');
+    try {
+      const content = await readFile(dotGit, 'utf8');
+      if (winDriveRe.test(content)) {
+        winDriveRe.lastIndex = 0; // reset after .test()
+        await writeFile(dotGit, toWsl(content), 'utf8');
+      }
+    } catch { /* not a file worktree or already gone */ }
+
+    // 2) Fix .git/worktrees/<name>/gitdir  (points back at <worktree>/.git)
+    //    and .git/worktrees/<name>/commondir (points at main .git)
+    const worktreeName = branch.replace(/\//g, '-'); // agent/gemini/T1 → agent-gemini-T1
+    const metaDir = join(this.projectRoot, '.git', 'worktrees', worktreeName);
+    for (const file of ['gitdir', 'commondir']) {
+      const p = join(metaDir, file);
+      try {
+        const content = await readFile(p, 'utf8');
+        if (winDriveRe.test(content)) {
+          winDriveRe.lastIndex = 0;
+          await writeFile(p, toWsl(content), 'utf8');
+        }
+      } catch { /* metadata dir may not exist */ }
+    }
   }
 
   /**
@@ -68,8 +128,9 @@ export class WorktreeManager {
    */
   async diff(taskId, agentName) {
     const branch = this.branchName(taskId, agentName);
+    const base = await this._getBaseBranch();
     try {
-      const { stdout } = await this._git(['diff', `main...${branch}`]);
+      const { stdout } = await this._git(['diff', `${base}...${branch}`]);
       return stdout;
     } catch {
       // Branch may not exist yet or have no commits
@@ -85,8 +146,9 @@ export class WorktreeManager {
    */
   async changedFiles(taskId, agentName) {
     const branch = this.branchName(taskId, agentName);
+    const base = await this._getBaseBranch();
     try {
-      const { stdout } = await this._git(['diff', '--name-only', `main...${branch}`]);
+      const { stdout } = await this._git(['diff', '--name-only', `${base}...${branch}`]);
       return stdout.trim().split('\n').filter(Boolean);
     } catch {
       return [];
@@ -101,14 +163,30 @@ export class WorktreeManager {
    */
   async merge(taskId, agentName) {
     const branch = this.branchName(taskId, agentName);
+    const base = await this._getBaseBranch();
+    // Switch to base branch before merging, then return to current branch
+    let originalBranch = '';
     try {
+      const { stdout } = await this._git(['rev-parse', '--abbrev-ref', 'HEAD']);
+      originalBranch = stdout.trim();
+    } catch { /* ignore */ }
+
+    try {
+      if (originalBranch !== base) {
+        await this._git(['checkout', base]);
+      }
       await this._git(['merge', '--no-ff', branch, '-m', `Merge task ${taskId} from ${agentName}`]);
-      return { success: true, conflicts: false, message: `Merged ${branch}` };
+      return { success: true, conflicts: false, message: `Merged ${branch} into ${base}` };
     } catch (err) {
       if (err.message.includes('CONFLICT') || err.stdout?.includes('CONFLICT')) {
         return { success: false, conflicts: true, message: err.stdout || err.message };
       }
       throw err;
+    } finally {
+      // Return to original branch if we switched
+      if (originalBranch && originalBranch !== base) {
+        await this._git(['checkout', originalBranch]).catch(() => {});
+      }
     }
   }
 

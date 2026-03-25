@@ -355,7 +355,9 @@ export class Orchestrator {
 
       console.log(`  [exec] ${task.id} via ${agentName} in Docker`);
       const containerName = `worker-${agentName}-${task.id}`;
-      await this.taskManager.updateStatus(task.id, 'in_progress', { container_id: containerName });
+      // Record container_id without status change — assignTasks already set in_progress
+      this.taskManager.db.prepare('UPDATE tasks SET container_id = ? WHERE id = ?')
+        .run(containerName, task.id);
 
       // Run in Docker
       const runResult = await this.docker.run({
@@ -373,16 +375,16 @@ export class Orchestrator {
       const filesChanged = await this._getChangedFiles(worktreePath);
       parsed.filesChanged = filesChanged;
 
-      // Update token usage if available
-      if (parsed.token_usage) {
-        await this.taskManager.updateStatus(task.id, 'done', {
-          result_ref: null,
-          token_usage: parsed.token_usage,
-        });
+      // Auto-commit any uncommitted changes the agent left behind.
+      // Agents are instructed to commit but may fail (no git identity in container,
+      // crash before commit, etc.). This ensures task_diff always has something to show.
+      if (filesChanged.length > 0) {
+        await this._autoCommit(worktreePath, task.id);
       }
 
       const finalStatus = runResult.exitCode === 0 && parsed.status !== 'failed' ? 'done' : 'failed';
-      await this.taskManager.updateStatus(task.id, finalStatus);
+      const extraFields = parsed.token_usage ? { token_usage: parsed.token_usage } : {};
+      await this.taskManager.updateStatus(task.id, finalStatus, extraFields);
 
       console.log(`  [${finalStatus}] ${task.id} (${runResult.duration_ms}ms, ${filesChanged.length} files changed)`);
       return parsed;
@@ -471,6 +473,36 @@ export class Orchestrator {
       cp.on('exit', () => { clearTimeout(timer); resolve(stdout); });
       cp.on('error', reject);
     });
+  }
+
+  /**
+   * Commit any uncommitted changes left in the worktree after a Docker run.
+   * Skips gracefully if there is nothing to commit or git fails.
+   * @param {string} worktreePath
+   * @param {string} taskId
+   */
+  async _autoCommit(worktreePath, taskId) {
+    const gitOpts = {
+      cwd: worktreePath,
+      timeout: 15_000,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'orchestrator',
+        GIT_AUTHOR_EMAIL: 'orchestrator@localhost',
+        GIT_COMMITTER_NAME: 'orchestrator',
+        GIT_COMMITTER_EMAIL: 'orchestrator@localhost',
+      },
+    };
+    try {
+      await execFileAsync('git', ['add', '-A'], gitOpts);
+      // Check if there's actually anything staged
+      const { stdout } = await execFileAsync('git', ['diff', '--cached', '--name-only'], gitOpts);
+      if (!stdout.trim()) return; // nothing staged after add (e.g. only .gitignore'd files)
+      await execFileAsync('git', ['commit', '-m', `task: ${taskId} (auto-commit by orchestrator)`], gitOpts);
+      console.log(`  [auto-commit] ${taskId} — committed remaining changes`);
+    } catch {
+      // Swallow — e.g. worktree git metadata broken, nothing to commit, etc.
+    }
   }
 
   /**
