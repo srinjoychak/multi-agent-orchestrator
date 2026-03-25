@@ -13,7 +13,7 @@
 
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { dirname, join as pathJoin } from 'node:path';
+import { dirname, basename, join as pathJoin } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const execFileAsync = promisify(execFile);
@@ -97,6 +97,17 @@ export class DockerRunner {
         dockerArgs.push('-v', `${workerSettings}:${authMount}/settings.json:ro`);
       }
     }
+
+    // Mount the project .git directory and set git env vars so git works inside
+    // the container without needing to read the /work/.git pointer file.
+    // The .git file contains a HOST path (/mnt/d/...) invisible inside the container;
+    // these env vars bypass it entirely.
+    const projectRoot = dirname(dirname(worktreePath)); // .worktrees/<name> -> project root
+    const worktreeName = basename(worktreePath);        // e.g. gemini-T1
+    dockerArgs.push('-v', `${projectRoot}/.git:/project-git:rw`);
+    dockerArgs.push('-e', `GIT_DIR=/project-git/worktrees/${worktreeName}`);
+    dockerArgs.push('-e', `GIT_COMMON_DIR=/project-git`);
+    dockerArgs.push('-e', `GIT_WORK_TREE=/work`);
 
     dockerArgs.push(image, ...cliArgs);
 

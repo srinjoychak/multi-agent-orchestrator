@@ -40,7 +40,7 @@ const DEFAULT_AGENTS = {
     image: 'worker-gemini:latest',
     capabilities: ['research', 'docs', 'analysis', 'code', 'test'],
     quota: 70,
-    timeoutMs: 120_000,
+    timeoutMs: 300_000,
     cliArgs: (prompt) => ['-p', prompt, '-y'],
     parseOutput: parseGeminiOutput,
     auth: { mountFrom: `${process.env.HOME}/.gemini`, mountTo: '/home/node/.gemini', mode: 'rw' },
@@ -419,7 +419,12 @@ export class Orchestrator {
       `- Work only within: ${worktreePath}`,
       '- Do NOT modify files outside this worktree.',
       '- Do NOT use save_memory or write to global config files.',
-      '- When done, commit your changes with: git add -A && git commit -m "task: ' + task.id + '"',
+      '',
+      '## Git Instructions',
+      '- This directory is a git worktree. Use shell commands (run_shell_command) for all git operations.',
+      '- Do NOT attempt to read the .git file directly — it is a worktree pointer and will be ignored.',
+      '- To commit: run_shell_command("git add -A && git commit -m \\"task: ' + task.id + '\\"") ',
+      '- Git identity is pre-configured — no need to set user.name or user.email.',
     ].join('\n');
   }
 
