@@ -1,6 +1,6 @@
 # Task Context — T1
 
-**Task:** Create CHANGELOG.md for v3 refactor
+**Task:** Create CHANGELOG.md
 **Type:** docs
 
 ## Objective
