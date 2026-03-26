@@ -125,7 +125,7 @@ export class AgentRouter {
       if (!Array.isArray(agent.capabilities) || agent.capabilities.length === 0) {
         throw new Error(`Agent '${agent.name}' must have a non-empty 'capabilities' array`);
       }
-      if (typeof agent.quota !== 'number' || agent.quota < 0 || agent.quota > 100) {
+      if (!Number.isInteger(agent.quota) || agent.quota < 0 || agent.quota > 100) {
         throw new Error(`Agent '${agent.name}' must have a 'quota' number between 0 and 100`);
       }
     }

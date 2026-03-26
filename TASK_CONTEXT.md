@@ -1,10 +1,10 @@
 # Task Context — T3
 
-**Task:** Add static validate method to Agent Router
+**Task:** Add static validate method to AgentRouter
 **Type:** code
 
 ## Objective
-Add a static validate(agents) method to src/router/index.js. The method must check that each agent object has a 'name' (string), 'capabilities' (non-empty array), and 'quota' (number between 0 and 100). Throw an error if any agent is invalid.
+In src/router/index.js, add a static validate(agents) method. For each agent in the array, ensure it has a 'name', 'capabilities' (a non-empty array), and 'quota' (an integer between 0 and 100 inclusive). Throw a descriptive Error if any agent is invalid.
 
 ## Constraints
 - Work only within: /mnt/d/ALL_AUTOMATION/copilot_adapter/.worktrees/claude-code-T3
