@@ -64,7 +64,9 @@ export class Orchestrator {
    */
   constructor(projectRoot, options = {}) {
     this.projectRoot = resolve(projectRoot);
-    this.stateDir = join(this.projectRoot, '.agent-team');
+    // Use /tmp to avoid SQLite "disk I/O error" on WSL2/network mounts
+    const tmpStateDir = join(tmpdir(), 'multi-agent-orchestrator-v3');
+    this.stateDir = options.stateDir ?? tmpStateDir;
     this.pollIntervalMs = options.pollIntervalMs ?? 2000;
 
     this.taskManager = new TaskManager(this.stateDir);

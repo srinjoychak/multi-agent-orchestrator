@@ -44,13 +44,19 @@ export class TaskManager {
 
   /** Initialize: create state directory and open the SQLite database. */
   async initialize() {
-    if (!existsSync(this.stateDir)) {
-      await mkdir(this.stateDir, { recursive: true });
+    try {
+      if (!existsSync(this.stateDir)) {
+        await mkdir(this.stateDir, { recursive: true });
+      }
+      console.error(`[taskmanager] Opening database at ${this.dbPath}`);
+      this.db = new Database(this.dbPath);
+      this.db.pragma('journal_mode = WAL');
+      this.db.pragma('foreign_keys = ON');
+      this.db.exec(readFileSync(SCHEMA_PATH, 'utf-8'));
+    } catch (err) {
+      console.error(`[taskmanager] FAILED to initialize database: ${err.message}`);
+      throw err;
     }
-    this.db = new Database(this.dbPath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('foreign_keys = ON');
-    this.db.exec(readFileSync(SCHEMA_PATH, 'utf-8'));
   }
 
   /**
