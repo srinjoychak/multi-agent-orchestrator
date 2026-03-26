@@ -40,12 +40,15 @@ export class TokenTracker {
       // Try parsing the whole stdout as JSON
       const obj = JSON.parse(stdout);
       const usage = obj.usage ?? obj;
-      return {
-        input: usage.input_tokens ?? 0,
-        output: usage.output_tokens ?? 0,
-        cache_read: usage.cache_read_input_tokens ?? 0,
-        cost_usd: usage.cost_usd ?? obj.cost_usd ?? 0,
-      };
+      if (usage.input_tokens != null || usage.output_tokens != null) {
+        return {
+          input: usage.input_tokens ?? 0,
+          output: usage.output_tokens ?? 0,
+          cache_read: usage.cache_read_input_tokens ?? 0,
+          cost_usd: usage.cost_usd ?? obj.cost_usd ?? 0,
+        };
+      }
+      return null;
     } catch {
       return null;
     }
