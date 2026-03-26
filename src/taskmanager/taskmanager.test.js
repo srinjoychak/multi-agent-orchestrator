@@ -42,7 +42,7 @@ describe('createTask() defaults from types/index.js', () => {
     assert.equal(task.result_ref, null);
     assert.equal(task.worktree_branch, null);
     assert.equal(task.retries, 0);
-    assert.equal(task.max_retries, 3);
+    assert.equal(task.max_retries, 1);
     assert.deepEqual(task.previous_agents, []);
   });
 });
@@ -85,7 +85,7 @@ describe('TaskManager.addTask()', () => {
     assert.equal(task.title, 'Test task');
     assert.equal(task.status, 'pending');
     assert.equal(task.retries, 0);
-    assert.equal(task.max_retries, 3);
+    assert.equal(task.max_retries, 1);
     assert.equal(task.assigned_to, null);
     assert.deepEqual(task.depends_on, []);
   });

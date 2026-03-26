@@ -69,7 +69,7 @@ export class TaskManager {
       description: task.description ?? '',
       type: task.type,
       depends_on: JSON.stringify(task.depends_on ?? []),
-      max_retries: task.max_retries ?? 3,
+      max_retries: task.max_retries ?? 1,
     });
     return this.getTask(task.id);
   }
@@ -93,7 +93,7 @@ export class TaskManager {
           description: t.description ?? '',
           type: t.type,
           depends_on: JSON.stringify(t.depends_on ?? []),
-          max_retries: t.max_retries ?? 3,
+          max_retries: t.max_retries ?? 1,
         });
       }
     })(tasks);
@@ -296,7 +296,7 @@ export class TaskManager {
       title: data.title ?? 'Untitled task',
       type: VALID_TYPES.has(data.type) ? data.type : 'code',
       depends_on: Array.isArray(data.depends_on) ? data.depends_on : [],
-      max_retries: data.max_retries ?? 3,
+      max_retries: data.max_retries ?? 1,
     };
   }
 

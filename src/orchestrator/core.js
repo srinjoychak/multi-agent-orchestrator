@@ -203,12 +203,49 @@ export class Orchestrator {
 
   /**
    * Execute all tasks in dependency-aware parallel waves.
+   * Circuit breaker: exits after maxIterations or totalTimeoutMs to prevent
+   * infinite loops when tasks keep cycling between pending/failed.
+   * @param {Object} [options]
+   * @param {number} [options.maxIterations=50]
+   * @param {number} [options.totalTimeoutMs=600000] — 10 minutes default
    */
-  async executeTasks() {
+  async executeTasks(options = {}) {
+    const maxIterations = options.maxIterations ?? 50;
+    const totalTimeoutMs = options.totalTimeoutMs ?? 600_000;
     const dispatched = new Set();
+    const startTime = Date.now();
+    let iteration = 0;
+    let lastStateHash = '';
 
     while (true) {
+      iteration++;
+      const elapsed = Date.now() - startTime;
+
+      // Circuit breaker: max iterations
+      if (iteration > maxIterations) {
+        console.error(`[orchestrator] Circuit breaker: exceeded ${maxIterations} iterations. Stopping.`);
+        break;
+      }
+
+      // Circuit breaker: total timeout
+      if (elapsed > totalTimeoutMs) {
+        console.error(`[orchestrator] Circuit breaker: exceeded ${Math.round(totalTimeoutMs / 1000)}s total timeout. Stopping.`);
+        break;
+      }
+
       const allTasks = await this.taskManager.getTasks();
+
+      // Circuit breaker: stuck detection — if task states haven't changed in 3 consecutive iterations
+      const stateHash = allTasks.map(t => `${t.id}:${t.status}:${t.retries}`).join('|');
+      if (stateHash === lastStateHash) {
+        // Check if everything that's not done/failed is just stuck
+        const active = allTasks.filter(t => t.status !== 'done' && t.status !== 'failed');
+        if (active.length === 0 || iteration > 3) {
+          console.error(`[orchestrator] Circuit breaker: task states unchanged for consecutive iterations. Stopping.`);
+          break;
+        }
+      }
+      lastStateHash = stateHash;
 
       // Fail tasks whose dependencies failed
       for (const task of allTasks.filter(t => t.status === 'pending')) {
@@ -241,13 +278,13 @@ export class Orchestrator {
       }
 
       if (toRun.length > 0) {
-        console.log(`  [wave] starting ${toRun.map(t => t.id).join(', ')}`);
+        console.log(`  [wave ${iteration}] starting ${toRun.map(t => t.id).join(', ')}`);
         toRun.forEach(t => dispatched.add(t.id));
         await Promise.all(toRun.map(t => this._runTask(t)));
         toRun.forEach(t => dispatched.delete(t.id));
       } else {
         const s = await this.taskManager.getSummary();
-        console.log(`  [progress] done=${s.done} running=${s.in_progress} pending=${s.pending} failed=${s.failed}`);
+        console.log(`  [iter ${iteration}/${maxIterations}] done=${s.done} running=${s.in_progress} pending=${s.pending} failed=${s.failed} elapsed=${Math.round(elapsed / 1000)}s`);
         await new Promise(r => setTimeout(r, this.pollIntervalMs));
       }
     }
@@ -376,9 +413,12 @@ export class Orchestrator {
       const filesChanged = await this._getChangedFiles(worktreePath);
       parsed.filesChanged = filesChanged;
 
+      // Remove the task context file before committing — it's per-task
+      // ephemeral state and will cause merge conflicts on every task_accept().
+      const ctxPath = join(worktreePath, 'TASK_CONTEXT.md');
+      await rm(ctxPath, { force: true }).catch(() => {});
+
       // Auto-commit any uncommitted changes the agent left behind.
-      // Agents are instructed to commit but may fail (no git identity in container,
-      // crash before commit, etc.). This ensures task_diff always has something to show.
       if (filesChanged.length > 0) {
         await this._autoCommit(worktreePath, task.id);
       }
@@ -392,13 +432,8 @@ export class Orchestrator {
 
     } catch (err) {
       console.error(`  [error] ${task.id}: ${err.message}`);
-      // Attempt retry
-      const retried = await this.taskManager.retryTask(task.id);
-      if (retried) {
-        console.log(`  [retry] ${task.id} (attempt ${retried.retries})`);
-      } else {
-        await this.taskManager.updateStatus(task.id, 'failed').catch(() => {});
-      }
+      // updateStatus('failed') handles auto-retry internally if retries < max_retries
+      await this.taskManager.updateStatus(task.id, 'failed').catch(() => {});
     }
   }
 

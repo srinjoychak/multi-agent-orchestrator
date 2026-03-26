@@ -2,7 +2,7 @@
   "claude-code": {
     "image": "worker-claude:latest",
     "capabilities": ["code", "refactor", "test", "debug", "review"],
-    "quota": 30,
+    "quota": 0,
     "timeoutMs": 300000,
     "tokenBudget": { "maxInputPerTask": 50000, "maxOutputPerTask": 16000 },
     "auth": { "mountFrom": "~/.claude", "mountTo": "/home/node/.claude", "mode": "ro" }
@@ -11,7 +11,7 @@
     "image": "worker-gemini:latest",
     "capabilities": ["research", "docs", "analysis", "code", "test"],
     "quota": 70,
-    "timeoutMs": 120000,
+    "timeoutMs": 300000,
     "tokenBudget": { "maxInputPerTask": 100000, "maxOutputPerTask": 32000 },
     "auth": { "mountFrom": "~/.gemini", "mountTo": "/home/node/.gemini", "mode": "rw" }
   }

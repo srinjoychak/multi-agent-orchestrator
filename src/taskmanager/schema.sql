@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   worktree_branch TEXT,
   container_id    TEXT,
   retries         INTEGER DEFAULT 0,
-  max_retries     INTEGER DEFAULT 3,
+  max_retries     INTEGER DEFAULT 1,
   previous_agents TEXT DEFAULT '[]',
   token_usage     TEXT DEFAULT '{}',
   created_at      TEXT DEFAULT (datetime('now'))
