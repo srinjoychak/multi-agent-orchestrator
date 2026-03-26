@@ -1,10 +1,10 @@
 # Task Context — T2
 
-**Task:** Create CONTRIBUTING.md guidelines
+**Task:** Create CONTRIBUTING.md
 **Type:** docs
 
 ## Objective
-Create CONTRIBUTING.md in the project root with contribution guidelines. Include sections for environment setup, branching strategy (using agent/* branches), running tests (via npm test), and the PR process.
+Create CONTRIBUTING.md in the project root with contribution guidelines. Include sections for setup, branching strategy (mention agent/* branches), running tests (using 'npm test'), and the PR process.
 
 ## Constraints
 - Work only within: /mnt/d/ALL_AUTOMATION/copilot_adapter/.worktrees/gemini-T2
