@@ -1,13 +1,13 @@
 # Task Context — T1
 
-**Task:** Implement TokenTracker class in src/tracker/index.js
-**Type:** code
+**Task:** Create TokenTracker unit tests in src/tracker/tracker.test.js
+**Type:** test
 
 ## Objective
-Read src/taskmanager/index.js and src/taskmanager/schema.sql. Then implement the TokenTracker class in src/tracker/index.js with these async methods: constructor(taskManager); parseClaude(stdout) [parse JSON to {input, output, cache_read, cost_usd} | null]; parseGemini(stdout, prompt) [estimate {input_est, output_est, cost_usd:0} as chars/4 for both input and output]; record(taskId, usage) [SQL: UPDATE tasks SET token_usage=? WHERE id=?]; summaryByAgent() [query tasks table, aggregate by assigned_to]; totalCost() [query tasks table for {totalCost, taskCount}].
+Read src/tracker/index.js and src/taskmanager/taskmanager.test.js to understand the implementation and testing patterns (node:test, node:assert/strict, makeTestEnv). Implement unit tests for TokenTracker including parseClaude (valid/invalid/embedded JSON), parseGemini (token estimation), record (SQLite persistence), summaryByAgent (aggregation), and totalCost (summation). Use the provided makeTestEnv pattern with a temporary directory and TaskManager. Ensure all tests pass by running 'npm test'. Finally, commit the changes with 'git add -A && git commit -m "test: add TokenTracker unit tests"'.
 
 ## Constraints
-- Work only within: /mnt/d/ALL_AUTOMATION/copilot_adapter/.worktrees/claude-code-T1
+- Work only within: /mnt/d/ALL_AUTOMATION/copilot_adapter/.worktrees/gemini-T1
 - Do NOT modify files outside this worktree.
 - Do NOT use save_memory or write to global config files.
 
