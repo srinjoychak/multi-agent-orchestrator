@@ -1,5 +1,0 @@
-- **Multi-Agent Capability Routing**: Automatically assigns tasks to the best-fit agent (Gemini or Claude) based on specific capabilities and quota-weighted load balancing.
-- **Isolated Docker Execution**: Runs each agent in an ephemeral, TTY-allocated Docker container, ensuring process isolation and preventing environment bleed or stdin hangs.
-- **Zero-Conflict Parallelism**: Utilizes isolated git worktrees for every task, allowing multiple agents to modify the codebase concurrently without direct file-system conflicts.
-- **Token Optimization Strategy**: Actively manages token usage by decomposing complex prompts into smaller tasks and routing commodity work to free-tier agents.
-- **MCP-Native Control Plane**: Functions as a Model Context Protocol (MCP) server, enabling any MCP-capable client to orchestrate the entire workforce through a standardized toolset.
