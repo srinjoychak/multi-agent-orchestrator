@@ -9,8 +9,8 @@
   },
   "gemini": {
     "image": "worker-gemini:latest",
-    "capabilities": ["research", "docs", "analysis", "code", "test"],
-    "quota": 70,
+    "capabilities": ["research", "docs", "analysis", "code", "test", "refactor", "debug", "review"],
+    "quota": 100,
     "timeoutMs": 300000,
     "tokenBudget": { "maxInputPerTask": 100000, "maxOutputPerTask": 32000 },
     "auth": { "mountFrom": "~/.gemini", "mountTo": "/home/node/.gemini", "mode": "rw" }

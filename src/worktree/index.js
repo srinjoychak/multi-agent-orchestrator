@@ -8,9 +8,16 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { rm, readFile, writeFile } from 'node:fs/promises';
+
+/** Returns true if dirPath is the same as or an ancestor of process.cwd(). */
+function isCwdDescendant(dirPath) {
+  const abs = resolve(dirPath);
+  const cwd = process.cwd();
+  return cwd === abs || cwd.startsWith(abs + '/');
+}
 
 const execFileAsync = promisify(execFile);
 
@@ -210,7 +217,11 @@ export class WorktreeManager {
     } catch {
       // If git worktree remove fails, clean up the directory manually
       if (existsSync(path)) {
-        await rm(path, { recursive: true, force: true });
+        if (isCwdDescendant(path)) {
+          console.error(`[worktree] Skipping rm of ${path} — shell CWD is inside it`);
+        } else {
+          await rm(path, { recursive: true, force: true });
+        }
         await this._git(['worktree', 'prune']).catch(() => {});
       }
     }
@@ -241,7 +252,11 @@ export class WorktreeManager {
         await this._git(['worktree', 'remove', '--force', path]);
       } catch {
         if (existsSync(path)) {
-          await rm(path, { recursive: true, force: true });
+          if (isCwdDescendant(path)) {
+            console.error(`[worktree] Skipping rm of ${path} — shell CWD is inside it`);
+          } else {
+            await rm(path, { recursive: true, force: true });
+          }
         }
       }
     }

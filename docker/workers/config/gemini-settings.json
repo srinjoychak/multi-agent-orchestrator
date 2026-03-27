@@ -3,5 +3,6 @@
     "auth": {
       "selectedType": "oauth-personal"
     }
-  }
+  },
+  "mcpServers": {}
 }

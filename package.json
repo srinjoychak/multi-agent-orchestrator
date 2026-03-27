@@ -15,7 +15,9 @@
     "validate": "bash docker/workers/validate-workers.sh",
     "test": "node --test src/**/*.test.js tests/**/*.test.js",
     "test:unit": "node --test src/**/*.test.js",
-    "test:integration": "node --test tests/**/*.test.js"
+    "test:integration": "node --test tests/**/*.test.js",
+    "kill-mcp": "pkill -f 'node src/mcp-server/index.js' || true",
+    "reset-state": "rm -rf ~/.local/share/multi-agent-orchestrator-v3 && echo 'State cleared'"
   },
   "keywords": [
     "ai-agents",

@@ -29,8 +29,37 @@ import {
 import { Orchestrator } from '../orchestrator/core.js';
 import { DockerRunner } from '../docker/runner.js';
 import { TOOLS, handleTool } from './tools.js';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 
 const PROJECT_ROOT = process.env.PROJECT_ROOT ?? process.cwd();
+
+// ─── Single-instance guard ────────────────────────────────────────────────────
+// Use ~/.local/share — stable across WSL2 reboots unlike /tmp which is wiped.
+const STATE_DIR = join(homedir(), '.local', 'share', 'multi-agent-orchestrator-v3');
+const PID_FILE  = join(STATE_DIR, 'mcp-server.pid');
+
+mkdirSync(STATE_DIR, { recursive: true });
+
+if (existsSync(PID_FILE)) {
+  const existingPid = parseInt(readFileSync(PID_FILE, 'utf8').trim(), 10);
+  try {
+    process.kill(existingPid, 0);
+    console.error(`[mcp-server] Already running (pid ${existingPid}). Exiting.`);
+    process.exit(1);
+  } catch {
+    console.error(`[mcp-server] Stale PID file (pid ${existingPid}). Overwriting.`);
+  }
+}
+writeFileSync(PID_FILE, String(process.pid));
+
+function cleanup() {
+  try { unlinkSync(PID_FILE); } catch { /* already gone */ }
+}
+process.on('SIGTERM', () => { cleanup(); process.exit(0); });
+process.on('SIGINT',  () => { cleanup(); process.exit(0); });
+process.on('exit', cleanup);
 
 // ─── Initialize orchestrator ─────────────────────────────────────────────────
 

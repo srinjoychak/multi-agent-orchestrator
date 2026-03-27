@@ -16,7 +16,7 @@
 
 import { join, resolve } from 'node:path';
 import { mkdir, mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -41,7 +41,7 @@ const DEFAULT_AGENTS = {
     capabilities: ['research', 'docs', 'analysis', 'code', 'test'],
     quota: 70,
     timeoutMs: 300_000,
-    cliArgs: (prompt) => ['-p', prompt, '-y'],
+    cliArgs: (prompt) => ['-p', prompt, '--approval-mode', 'yolo', '--output-format', 'json'],
     parseOutput: parseGeminiOutput,
     auth: { mountFrom: `${process.env.HOME}/.gemini`, mountTo: '/home/node/.gemini', mode: 'rw' },
   },
@@ -64,9 +64,10 @@ export class Orchestrator {
    */
   constructor(projectRoot, options = {}) {
     this.projectRoot = resolve(projectRoot);
-    // Use /tmp to avoid SQLite "disk I/O error" on WSL2/network mounts
-    const tmpStateDir = join(tmpdir(), 'multi-agent-orchestrator-v3');
-    this.stateDir = options.stateDir ?? tmpStateDir;
+    // Use ~/.local/share (ext4, survives WSL2 reboots) instead of /tmp (wiped on reboot)
+    // and instead of /mnt/d (9p/DrvFs — SQLite WAL locking is broken there).
+    const defaultStateDir = join(homedir(), '.local', 'share', 'multi-agent-orchestrator-v3');
+    this.stateDir = options.stateDir ?? defaultStateDir;
     this.pollIntervalMs = options.pollIntervalMs ?? 2000;
 
     this.taskManager = new TaskManager(this.stateDir);
@@ -358,7 +359,11 @@ export class Orchestrator {
     return { killed, container_id: task.container_id };
   }
 
-  /** Hard reset: remove all worktrees, clear task state. */
+  /**
+   * Hard reset: remove all worktrees, clear task state.
+   * NOTE: stateDir itself is never deleted — only its contents are cleared —
+   * to avoid inode invalidation for shells whose CWD is inside it.
+   */
   async reset() {
     await this.worktreeManager.reset();
     this.taskManager.clear();
@@ -425,6 +430,15 @@ export class Orchestrator {
         await this._autoCommit(worktreePath, task.id);
       }
 
+      // Treat zero file changes as a failure for tasks that must produce output.
+      // Prevents silent "done" when an agent ran but wrote nothing.
+      const requiresOutput = ['code', 'refactor', 'test', 'docs'].includes(task.type);
+      if (filesChanged.length === 0 && requiresOutput && runResult.exitCode === 0) {
+        console.error(`  [fail] ${task.id}: agent produced no file changes for a ${task.type} task`);
+        await this.taskManager.updateStatus(task.id, 'failed').catch(() => {});
+        return;
+      }
+
       const finalStatus = runResult.exitCode === 0 && parsed.status !== 'failed' ? 'done' : 'failed';
       const extraFields = parsed.token_usage ? { token_usage: parsed.token_usage } : {};
       await this.taskManager.updateStatus(task.id, finalStatus, extraFields);
@@ -471,21 +485,41 @@ export class Orchestrator {
    * Claude needs the full context in the prompt.
    */
   _buildPrompt(task, agentName, worktreePath) {
-    if (agentName === 'gemini') {
-      return `Task: ${task.title}\n\nPlease complete the task described in TASK_CONTEXT.md. Commit all changes when done.`;
-    }
-    return [
-      `Task: ${task.title}`,
+    // Shared full-context block — both agents get the complete picture
+    const base = [
+      `# Task ${task.id}: ${task.title}`,
       '',
+      '## Working Directory',
+      worktreePath,
+      '',
+      '## Full Requirements',
       task.description,
       '',
-      `Working directory: ${worktreePath}`,
+      '## Mandatory Instructions',
+      '- Read TASK_CONTEXT.md in the working directory for additional context.',
+      '- Complete ALL requirements listed above. Do not skip or partially implement.',
+      '- Write every file fully — no placeholders, no TODOs, no truncation.',
+      '- Use only non-interactive shell commands (no prompts, no confirmations).',
+      '- Do NOT run: npm init, git init, npx create-*, or any interactive installer.',
+      '- When done: run `git add -A && git commit -m "task: ' + task.id + '"` in the working directory.',
       '',
-      'Instructions:',
-      '- Complete the task described above.',
-      '- Only modify files relevant to this task.',
-      '- Run git add -A && git commit when done.',
-    ].join('\n');
+      '## Completion Checklist (verify before committing)',
+      '- [ ] All required files exist and are fully written',
+      '- [ ] Code runs without syntax errors',
+      '- [ ] git status shows changes staged and committed',
+    ];
+
+    if (agentName === 'gemini') {
+      return [
+        ...base,
+        '',
+        '## Reporting',
+        'After committing, briefly summarise: what files you created/modified, what each does, and confirm the git commit succeeded.',
+      ].join('\n');
+    }
+
+    // Claude gets the same base — no special divergence needed
+    return base.join('\n');
   }
 
   /**
@@ -619,7 +653,18 @@ function parseGeminiOutput(stdout, stderr, duration_ms) {
     const summary = parsed.response ?? parsed.text ??
       (Array.isArray(parsed.candidates) ? parsed.candidates[0]?.content?.parts?.map(p => p.text).join('') : null) ??
       trimmed.slice(0, 500);
-    return { status: 'done', summary, filesChanged: [], output: stdout, duration_ms };
+
+    // Extract token usage from --output-format json stats block
+    const models = parsed.stats?.models ?? {};
+    const firstModel = Object.values(models)[0];
+    const token_usage = firstModel ? {
+      input: firstModel.tokens?.input ?? 0,
+      output: firstModel.tokens?.candidates ?? 0,
+      thoughts: firstModel.tokens?.thoughts ?? 0,
+      total: firstModel.tokens?.total ?? 0,
+    } : undefined;
+
+    return { status: 'done', summary, filesChanged: [], output: stdout, duration_ms, token_usage };
   }
 
   // Non-JSON = task likely didn't complete properly

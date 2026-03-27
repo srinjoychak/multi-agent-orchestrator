@@ -78,7 +78,6 @@ export class DockerRunner {
     const dockerArgs = [
       'run',
       '--rm',
-      '-t',
       '--name', containerName,
       '-v', `${worktreePath}:/work`,
       '--memory', memory,

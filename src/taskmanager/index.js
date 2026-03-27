@@ -15,7 +15,7 @@
 
 import Database from 'better-sqlite3';
 import { join, dirname } from 'node:path';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, unlinkSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
@@ -48,9 +48,17 @@ export class TaskManager {
       if (!existsSync(this.stateDir)) {
         await mkdir(this.stateDir, { recursive: true });
       }
+      // Clean up WAL artefacts from unclean shutdowns (common after WSL2 reboot).
+      // Stale -shm/-wal files cause "disk I/O error" on next open.
+      for (const suffix of ['-shm', '-wal']) {
+        const f = this.dbPath + suffix;
+        if (existsSync(f)) { try { unlinkSync(f); } catch { /* ignore */ } }
+      }
       console.error(`[taskmanager] Opening database at ${this.dbPath}`);
       this.db = new Database(this.dbPath);
-      this.db.pragma('journal_mode = WAL');
+      // Use DELETE journal mode — WAL requires shared-memory file locking that
+      // is unreliable over WSL2 9p/DrvFs mounts and fragile after unclean shutdown.
+      this.db.pragma('journal_mode = DELETE');
       this.db.pragma('foreign_keys = ON');
       this.db.exec(readFileSync(SCHEMA_PATH, 'utf-8'));
     } catch (err) {

@@ -1,5 +1,5 @@
 # Multi-Agent Orchestrator — Design Document v3
-_Last updated: 2026-03-24_
+_Last updated: 2026-03-27_
 
 ---
 
@@ -456,3 +456,169 @@ copilot_adapter/
 - No A2A protocol (MCP is sufficient for our use case)
 - No nested teams (single orchestrator, flat worker pool)
 - No model fine-tuning or training
+
+---
+
+## v4 Architecture Plan — Job Queue + Worker Pool
+_Planned: 2026-03-27_
+
+### Motivation
+
+Production testing of the v3 workforce revealed three fundamental problems:
+
+1. **Flat task table with no job isolation** — a new `orchestrate()` call picks up stale pending tasks from previous jobs, causing wrong work to execute with wrong prompts.
+2. **Single worker per agent type** — only one gemini and one claude container run at a time. A 6-task job runs serially when it could run in parallel, wasting wall-clock time.
+3. **No forced agent routing** — `"assign ONLY to gemini"` in the prompt is ignored. The router is purely quota-weighted with no per-task override.
+
+### Core Concepts
+
+#### Job vs Task
+
+| Concept | Definition |
+|---------|-----------|
+| **Job** | One `orchestrate()` call. UUID-scoped. Contains N tasks. Completely isolated from other jobs. |
+| **Task** | A unit of work within a job. Has its own queue position, agent assignment, retry state. |
+
+A new `orchestrate()` creates a new Job with a UUID. It never touches tasks from other jobs. Stale tasks remain in their own job scope — visible, queryable, but never picked up by a different job's execution loop.
+
+#### The 4 Queues (FIFO)
+
+```
+orchestrate(prompt)
+      │
+      ▼  creates Job(uuid)
+      │
+      ├─ PENDING QUEUE   ← new tasks land here; retry queue drains here on backoff expiry
+      │       │
+      │       │  worker claims oldest matching task (atomic SQLite tx)
+      │       ▼
+      ├─ RUNNING QUEUE   ← task is executing in a Docker container
+      │       │
+      │       ├─ success → DONE QUEUE
+      │       │
+      │       └─ fail, retries left → RETRY QUEUE (with backoff timer)
+      │                                     │
+      │                                     └─ after backoff → PENDING QUEUE
+      │
+      └─ DONE QUEUE      ← permanent resting place (done or failed_permanent)
+```
+
+| Queue | Populated by | Drained by |
+|-------|-------------|------------|
+| PENDING | `orchestrate()` on new tasks; retry backoff expiry | Worker claim |
+| RUNNING | Worker claim | Worker complete/fail |
+| RETRY | Worker fail (retries remaining) | Dispatcher after `retry_after` timestamp |
+| DONE | Worker complete; max retries exhausted | Never — read-only history |
+
+#### Worker Pool — Multiple Concurrent Workers Per Agent
+
+`quota` (routing weight %) and `concurrency` (max parallel containers) are now separate:
+
+```json
+{
+  "gemini": {
+    "quota": 70,
+    "concurrency": 3
+  },
+  "claude-code": {
+    "quota": 30,
+    "concurrency": 1
+  }
+}
+```
+
+With `concurrency: 3` for gemini, the dispatcher spawns up to 3 simultaneous gemini containers, each claiming a different task from PENDING. A 6-task job can have all 6 in RUNNING simultaneously (3 gemini + 1 claude + queued for next slot). This is the **divide and conquer** model — same token usage, fraction of the wall-clock time.
+
+#### Worker Claim Protocol (Atomic, Race-Safe)
+
+```sql
+BEGIN IMMEDIATE;
+SELECT * FROM tasks
+  WHERE job_id = ? AND queue = 'pending'
+    AND (forced_agent IS NULL OR forced_agent = ?)
+    AND claimed_by IS NULL
+    AND depends_on_satisfied = 1
+  ORDER BY created_at ASC
+  LIMIT 1;
+UPDATE tasks SET queue='running', claimed_by=?, claimed_at=datetime('now') WHERE id=?;
+COMMIT;
+```
+
+SQLite serializes concurrent `BEGIN IMMEDIATE` transactions — no two workers can claim the same task.
+
+#### `forced_agent` Field
+
+A new optional task field. When set, only a worker of that type can claim the task:
+
+```json
+{ "id": "T1", "forced_agent": "gemini", "queue": "pending", ... }
+```
+
+The Tech Lead (or decomposer) sets this when routing must be deterministic. The router respects it in the claim query. Quota logic is bypassed entirely for forced tasks.
+
+### Updated Schema
+
+```sql
+-- New: jobs table
+CREATE TABLE jobs (
+  id          TEXT PRIMARY KEY,   -- UUID
+  prompt      TEXT NOT NULL,
+  status      TEXT DEFAULT 'running', -- running | done | failed
+  created_at  TEXT DEFAULT (datetime('now'))
+);
+
+-- Updated: tasks table additions
+ALTER TABLE tasks ADD COLUMN job_id       TEXT REFERENCES jobs(id);
+ALTER TABLE tasks ADD COLUMN queue        TEXT DEFAULT 'pending';
+  -- pending | running | retry | done | failed_permanent
+ALTER TABLE tasks ADD COLUMN claimed_by   TEXT;   -- worker instance ID
+ALTER TABLE tasks ADD COLUMN retry_after  TEXT;   -- ISO timestamp for retry backoff
+ALTER TABLE tasks ADD COLUMN forced_agent TEXT;   -- if set, only this agent type claims
+```
+
+### Updated Routing
+
+```
+_selectAgent(task):
+  if task.forced_agent:
+    return task.forced_agent  ← skip quota logic entirely
+
+  capable_fresh = agents where:
+    - has capability for task.type
+    - not in task.previous_agents
+    - running_count < concurrency
+  if capable_fresh: return lowest quota ratio
+
+  fresh = agents not in previous_agents with open slots
+  if fresh: return lowest quota ratio
+
+  force-assign: lowest ratio among agents with open slots
+```
+
+### What Does NOT Change
+
+The MCP tool API is identical. `orchestrate()`, `task_status()`, `task_diff()`, `task_accept()`, `task_reject()`, `task_logs()`, `task_kill()`, `workforce_status()` — same signatures, same responses. The queue architecture is an internal implementation detail invisible to Tech Leads and MCP clients.
+
+### Problems This Solves
+
+| Problem | Solution |
+|---------|---------|
+| Stale tasks from old job mixed into new job | Job UUID scoping — execution loop is per-job |
+| Retry queue destroyed by new `orchestrate()` | Retry queue is per-job; new jobs never touch it |
+| Git branch collision on same task ID | Branch name includes job UUID: `agent/gemini/JOB-abc/T1` |
+| Can't force agent type | `forced_agent` field on task |
+| Only 1 worker per agent type | `concurrency` field in agents.json |
+| Race conditions in worker claim | Atomic `BEGIN IMMEDIATE` SQLite transaction |
+| Lost observability on failed tasks | DONE queue preserves full history |
+
+### Files to Modify
+
+| File | Change |
+|------|--------|
+| `src/taskmanager/schema.sql` | Add `jobs` table; add `job_id`, `queue`, `claimed_by`, `retry_after`, `forced_agent` columns |
+| `src/taskmanager/index.js` | `addJob()`, atomic `claimTask()`, `failTask()` with retry routing, `retryDue()` |
+| `src/orchestrator/core.js` | `orchestrate()` creates Job UUID; execution loop scoped to job; dispatcher checks concurrency slots |
+| `src/router/index.js` | Add `forced_agent` check; add concurrency slot check; split quota-weight from concurrency |
+| `agents.json` | Add `concurrency` field per agent |
+| `src/docker/runner.js` | Include job UUID in container name |
+| `AGENTS.md` | Document `forced_agent` usage for Tech Leads |
