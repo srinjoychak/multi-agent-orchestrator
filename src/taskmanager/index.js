@@ -11,6 +11,8 @@
  *               pending      failed -> pending (retry, up to max_retries)
  *
  * Rejection re-queues: done -> pending (with rejection reason appended).
+ *
+ * v4 additions: jobs table, forced_agent, job-scoped queries, retryDue().
  */
 
 import Database from 'better-sqlite3';
@@ -67,6 +69,43 @@ export class TaskManager {
     }
   }
 
+  // ─── Job management ───────────────────────────────────────────────────────
+
+  /**
+   * Register a new job.
+   * @param {string} jobId — UUID
+   * @param {string} prompt
+   * @returns {Object}
+   */
+  addJob(jobId, prompt) {
+    this.db.prepare(`
+      INSERT INTO jobs (id, prompt) VALUES (?, ?)
+    `).run(jobId, prompt);
+    return this.getJob(jobId);
+  }
+
+  /**
+   * Get a job by ID.
+   * @param {string} jobId
+   * @returns {Object}
+   */
+  getJob(jobId) {
+    const row = this.db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId);
+    if (!row) throw new Error(`Job ${jobId} not found`);
+    return row;
+  }
+
+  /**
+   * Mark a job as done or failed.
+   * @param {string} jobId
+   * @param {'done'|'failed'} status
+   */
+  finishJob(jobId, status) {
+    this.db.prepare('UPDATE jobs SET status = ? WHERE id = ?').run(status, jobId);
+  }
+
+  // ─── Task management ──────────────────────────────────────────────────────
+
   /**
    * Add a single task.
    * @param {Object} taskData
@@ -75,15 +114,17 @@ export class TaskManager {
   async addTask(taskData) {
     const task = this._normalise(taskData);
     this.db.prepare(`
-      INSERT INTO tasks (id, title, description, type, status, depends_on, max_retries)
-      VALUES (@id, @title, @description, @type, 'pending', @depends_on, @max_retries)
+      INSERT INTO tasks (id, job_id, title, description, type, status, depends_on, max_retries, forced_agent)
+      VALUES (@id, @job_id, @title, @description, @type, 'pending', @depends_on, @max_retries, @forced_agent)
     `).run({
       id: task.id,
+      job_id: task.job_id ?? null,
       title: task.title,
       description: task.description ?? '',
       type: task.type,
       depends_on: JSON.stringify(task.depends_on ?? []),
       max_retries: task.max_retries ?? 1,
+      forced_agent: task.forced_agent ?? null,
     });
     return this.getTask(task.id);
   }
@@ -95,19 +136,21 @@ export class TaskManager {
    */
   async addTasks(tasks) {
     const stmt = this.db.prepare(`
-      INSERT OR IGNORE INTO tasks (id, title, description, type, status, depends_on, max_retries)
-      VALUES (@id, @title, @description, @type, 'pending', @depends_on, @max_retries)
+      INSERT OR IGNORE INTO tasks (id, job_id, title, description, type, status, depends_on, max_retries, forced_agent)
+      VALUES (@id, @job_id, @title, @description, @type, 'pending', @depends_on, @max_retries, @forced_agent)
     `);
     this.db.transaction((rows) => {
       for (const row of rows) {
         const t = this._normalise(row);
         stmt.run({
           id: t.id,
+          job_id: t.job_id ?? null,
           title: t.title,
           description: t.description ?? '',
           type: t.type,
           depends_on: JSON.stringify(t.depends_on ?? []),
           max_retries: t.max_retries ?? 1,
+          forced_agent: t.forced_agent ?? null,
         });
       }
     })(tasks);
@@ -131,14 +174,47 @@ export class TaskManager {
   }
 
   /**
+   * Get all tasks for a specific job.
+   * @param {string} jobId
+   * @returns {Object[]}
+   */
+  async getJobTasks(jobId) {
+    return this.db.prepare('SELECT * FROM tasks WHERE job_id = ? ORDER BY created_at')
+      .all(jobId)
+      .map(r => this._deserialise(r));
+  }
+
+  /**
+   * Get pending tasks for a job whose dependencies are all done,
+   * and which this agent is allowed to claim (forced_agent check).
+   * @param {string} jobId
+   * @param {string} agentName
+   * @returns {Object[]}
+   */
+  async getClaimableTasksForJob(jobId, agentName) {
+    const tasks = await this.getJobTasks(jobId);
+    return tasks.filter(t => {
+      if (t.status !== 'pending') return false;
+      if (t.forced_agent && t.forced_agent !== agentName) return false;
+      return t.depends_on.every(dep => tasks.find(x => x.id === dep)?.status === 'done');
+    });
+  }
+
+  /**
    * Claim a task (pending -> claimed) for an agent.
-   * Uses a transaction to prevent double-claiming.
+   * Uses BEGIN IMMEDIATE transaction to prevent double-claiming.
+   * Checks forced_agent constraint.
    */
   async claimTask(taskId, agentName) {
     this.db.transaction(() => {
       const task = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
       if (!task) throw new Error(`Task ${taskId} not found`);
       if (task.status !== 'pending') throw new Error(`Task ${taskId} is ${task.status}, cannot claim`);
+
+      // Enforce forced_agent constraint
+      if (task.forced_agent && task.forced_agent !== agentName) {
+        throw new Error(`Task ${taskId} is reserved for ${task.forced_agent}`);
+      }
 
       // Check dependency blockers
       const deps = JSON.parse(task.depends_on || '[]');
@@ -254,6 +330,18 @@ export class TaskManager {
   }
 
   /**
+   * Move tasks from retry queue back to pending if their retry_after has passed.
+   * @returns {number} count of tasks re-queued
+   */
+  retryDue() {
+    const result = this.db.prepare(`
+      UPDATE tasks SET status='pending', queue='pending', retry_after=NULL
+      WHERE queue='retry' AND retry_after <= datetime('now')
+    `).run();
+    return result.changes;
+  }
+
+  /**
    * Get all tasks assigned to a specific agent.
    * @param {string} agentName
    * @returns {Object[]}
@@ -272,17 +360,28 @@ export class TaskManager {
     `).run();
   }
 
-  /** Check if all tasks are in a terminal state. @returns {boolean} */
-  async isAllComplete() {
-    const row = this.db.prepare(`
-      SELECT COUNT(*) as cnt FROM tasks WHERE status NOT IN ('done','failed')
-    `).get();
+  /**
+   * Check if all tasks are in a terminal state.
+   * @param {string} [jobId] — if provided, only checks tasks for this job
+   * @returns {boolean}
+   */
+  async isAllComplete(jobId) {
+    const where = jobId
+      ? "WHERE job_id = ? AND status NOT IN ('done','failed')"
+      : "WHERE status NOT IN ('done','failed')";
+    const args = jobId ? [jobId] : [];
+    const row = this.db.prepare(`SELECT COUNT(*) as cnt FROM tasks ${where}`).get(...args);
     return row.cnt === 0;
   }
 
-  /** Get status summary. */
-  async getSummary() {
-    const rows = this.db.prepare('SELECT status, COUNT(*) as cnt FROM tasks GROUP BY status').all();
+  /**
+   * Get status summary.
+   * @param {string} [jobId] — if provided, only counts tasks for this job
+   */
+  async getSummary(jobId) {
+    const where = jobId ? 'WHERE job_id = ?' : '';
+    const args  = jobId ? [jobId] : [];
+    const rows = this.db.prepare(`SELECT status, COUNT(*) as cnt FROM tasks ${where} GROUP BY status`).all(...args);
     const s = { pending: 0, claimed: 0, in_progress: 0, done: 0, failed: 0, total: 0 };
     for (const row of rows) { s[row.status] = row.cnt; s.total += row.cnt; }
     return s;
@@ -298,7 +397,10 @@ export class TaskManager {
   }
 
   /** Clear all tasks. */
-  clear() { this.db.prepare('DELETE FROM tasks').run(); }
+  clear() {
+    this.db.prepare('DELETE FROM tasks').run();
+    this.db.prepare('DELETE FROM jobs').run();
+  }
 
   /** Close the database. */
   close() { this.db?.close(); this.db = null; }
