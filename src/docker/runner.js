@@ -58,6 +58,7 @@ export class DockerRunner {
    * @param {string} params.agentName       - 'gemini' | 'claude-code'
    * @param {string} params.worktreePath    - host path to the git worktree
    * @param {string[]} params.cliArgs       - args to pass to the CLI inside the container
+   * @param {string} [params.jobId]         - optional job UUID to prefix the container name
    * @param {Object} [params.options]
    * @param {number} [params.options.timeoutMs]
    * @param {string} [params.options.memory]
@@ -65,11 +66,12 @@ export class DockerRunner {
    *
    * @returns {Promise<{exitCode: number, stdout: string, stderr: string, duration_ms: number, containerId: string}>}
    */
-  async run({ taskId, agentName, worktreePath, cliArgs, options = {} }) {
+  async run({ taskId, agentName, worktreePath, cliArgs, jobId, options = {} }) {
     const timeoutMs = options.timeoutMs ?? this.defaultTimeoutMs;
     const memory = options.memory ?? this.defaultMemory;
     const image = options.image ?? `worker-${agentName}:latest`;
-    const containerName = `worker-${agentName}-${taskId}`;
+    const jobIdStr = jobId ? `${jobId}-` : '';
+    const containerName = `worker-${agentName}-${jobIdStr}${taskId}`;
     const timeoutSec = Math.ceil(timeoutMs / 1000);
 
     const authDir = AUTH_DIRS[agentName];

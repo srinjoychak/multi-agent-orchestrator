@@ -1,6 +1,7 @@
 {
   "claude-code": {
     "image": "worker-claude:latest",
+    "concurrency": 1,
     "capabilities": ["code", "refactor", "test", "debug", "review"],
     "quota": 0,
     "timeoutMs": 300000,
@@ -9,6 +10,7 @@
   },
   "gemini": {
     "image": "worker-gemini:latest",
+    "concurrency": 3,
     "capabilities": ["research", "docs", "analysis", "code", "test"],
     "quota": 70,
     "timeoutMs": 300000,
