@@ -17,6 +17,7 @@
 import { join, resolve } from 'node:path';
 import { mkdir, mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -78,6 +79,9 @@ export class Orchestrator {
     /** @type {Map<string, Object>} agentName -> agent config */
     this.agents = new Map();
     this.router = null;
+
+    /** @type {Map<string, number>} agentName -> current running container count */
+    this._runningCounts = new Map();
   }
 
   /**
@@ -120,16 +124,40 @@ export class Orchestrator {
   }
 
   /**
+   * Full pipeline: generate job UUID, decompose, assign, and execute tasks.
+   * @param {string} userPrompt
+   * @param {Object} [options] — forwarded to executeTasks
+   * @returns {Promise<{jobId: string, tasks: Object[]}>}
+   */
+  async orchestrate(userPrompt, options = {}) {
+    const jobId = randomUUID();
+    this.taskManager.addJob(jobId, userPrompt);
+    console.log(`[orchestrator] Job ${jobId} started`);
+
+    const tasks = await this.decomposeTasks(userPrompt, jobId);
+    await this.executeTasks({ ...options, jobId });
+
+    const finalTasks = await this.taskManager.getJobTasks(jobId);
+    const allDone = finalTasks.every(t => t.status === 'done');
+    this.taskManager.finishJob(jobId, allDone ? 'done' : 'failed');
+
+    console.log(`[orchestrator] Job ${jobId} finished — ${allDone ? 'done' : 'failed'}`);
+    return { jobId, tasks: finalTasks };
+  }
+
+  /**
    * Decompose a user prompt into discrete tasks using a planner.
    * Uses Gemini for decomposition (free tier) to save Claude quota.
    * @param {string} userPrompt
+   * @param {string} [jobId] — if provided, tasks are tagged with this job
    * @returns {Promise<Object[]>}
    */
-  async decomposeTasks(userPrompt) {
+  async decomposeTasks(userPrompt, jobId) {
     // Short-circuit: very short prompts are single tasks
     if (userPrompt.length < 200 && !userPrompt.includes('\n')) {
       return this.taskManager.addTasks([{
         id: 'T1',
+        job_id: jobId ?? null,
         title: userPrompt.slice(0, 80),
         description: userPrompt,
         type: 'code',
@@ -164,12 +192,13 @@ export class Orchestrator {
     try {
       const parsed = this._extractJsonArray(planOutput);
       return this.taskManager.addTasks(
-        parsed.map(t => ({ ...t, type: VALID_TYPES.has(t.type) ? t.type : 'code' }))
+        parsed.map(t => ({ ...t, job_id: jobId ?? null, type: VALID_TYPES.has(t.type) ? t.type : 'code' }))
       );
     } catch {
       console.error('[orchestrator] Decompose failed, creating single task');
       return this.taskManager.addTasks([{
         id: 'T1',
+        job_id: jobId ?? null,
         title: userPrompt.slice(0, 80),
         description: userPrompt,
         type: 'code',
@@ -209,16 +238,22 @@ export class Orchestrator {
    * Circuit breaker: exits after maxIterations or totalTimeoutMs to prevent
    * infinite loops when tasks keep cycling between pending/failed.
    * @param {Object} [options]
+   * @param {string} [options.jobId] — if provided, only executes tasks for this job
    * @param {number} [options.maxIterations=50]
    * @param {number} [options.totalTimeoutMs=600000] — 10 minutes default
    */
   async executeTasks(options = {}) {
+    const { jobId } = options;
     const maxIterations = options.maxIterations ?? 50;
     const totalTimeoutMs = options.totalTimeoutMs ?? 600_000;
     const dispatched = new Set();
     const startTime = Date.now();
     let iteration = 0;
     let lastStateHash = '';
+
+    const getTasks = () => jobId
+      ? this.taskManager.getJobTasks(jobId)
+      : this.taskManager.getTasks();
 
     while (true) {
       iteration++;
@@ -236,7 +271,7 @@ export class Orchestrator {
         break;
       }
 
-      const allTasks = await this.taskManager.getTasks();
+      const allTasks = await getTasks();
 
       // Circuit breaker: stuck detection — if task states haven't changed in 3 consecutive iterations
       const stateHash = allTasks.map(t => `${t.id}:${t.status}:${t.retries}`).join('|');
@@ -261,7 +296,7 @@ export class Orchestrator {
         }
       }
 
-      if (await this.taskManager.isAllComplete()) break;
+      if (await this.taskManager.isAllComplete(jobId)) break;
 
       const readyTasks = allTasks.filter(t => {
         if (t.status !== 'pending') return false;
@@ -273,20 +308,45 @@ export class Orchestrator {
 
       if (readyTasks.length > 0) {
         await this.assignTasks(readyTasks);
-        const refreshed = await this.taskManager.getTasks();
+        const refreshed = await getTasks();
         const newlyReady = refreshed.filter(t =>
           readyTasks.some(r => r.id === t.id) && t.status === 'in_progress' && !dispatched.has(t.id)
         );
         toRun.push(...newlyReady);
       }
 
-      if (toRun.length > 0) {
-        console.log(`  [wave ${iteration}] starting ${toRun.map(t => t.id).join(', ')}`);
-        toRun.forEach(t => dispatched.add(t.id));
-        await Promise.all(toRun.map(t => this._runTask(t)));
-        toRun.forEach(t => dispatched.delete(t.id));
+      // Filter out tasks that would exceed agent concurrency limits
+      const concurrencyFiltered = toRun.filter(t => {
+        const agentName = t.assigned_to;
+        if (!agentName) return true;
+        const agentCfg = this.agents.get(agentName);
+        const limit = agentCfg?.concurrency ?? Infinity;
+        const current = this._runningCounts.get(agentName) ?? 0;
+        return current < limit;
+      });
+
+      if (concurrencyFiltered.length > 0) {
+        console.log(`  [wave ${iteration}] starting ${concurrencyFiltered.map(t => t.id).join(', ')}`);
+        concurrencyFiltered.forEach(t => {
+          dispatched.add(t.id);
+          const agentName = t.assigned_to;
+          if (agentName) {
+            this._runningCounts.set(agentName, (this._runningCounts.get(agentName) ?? 0) + 1);
+          }
+        });
+        await Promise.all(concurrencyFiltered.map(async t => {
+          try {
+            await this._runTask(t);
+          } finally {
+            dispatched.delete(t.id);
+            const agentName = t.assigned_to;
+            if (agentName) {
+              this._runningCounts.set(agentName, Math.max(0, (this._runningCounts.get(agentName) ?? 1) - 1));
+            }
+          }
+        }));
       } else {
-        const s = await this.taskManager.getSummary();
+        const s = await this.taskManager.getSummary(jobId);
         console.log(`  [iter ${iteration}/${maxIterations}] done=${s.done} running=${s.in_progress} pending=${s.pending} failed=${s.failed} elapsed=${Math.round(elapsed / 1000)}s`);
         await new Promise(r => setTimeout(r, this.pollIntervalMs));
       }
@@ -399,7 +459,8 @@ export class Orchestrator {
       const cliArgs = agentCfg.cliArgs(prompt);
 
       console.log(`  [exec] ${task.id} via ${agentName} in Docker`);
-      const containerName = `worker-${agentName}-${task.id}`;
+      const jobPrefix = task.job_id ? `${task.job_id.slice(0, 8)}-` : '';
+      const containerName = `worker-${agentName}-${jobPrefix}${task.id}`;
       // Record container_id without status change — assignTasks already set in_progress
       this.taskManager.db.prepare('UPDATE tasks SET container_id = ? WHERE id = ?')
         .run(containerName, task.id);
