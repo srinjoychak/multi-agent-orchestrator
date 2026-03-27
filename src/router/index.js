@@ -35,14 +35,17 @@ export class AgentRouter {
   /**
    * Assign a list of tasks to agents.
    * @param {Object[]} tasks
+   * @param {Object} [runningCounts={}] — Current global running counts per agent
    * @returns {Array<{task: Object, agentName: string}>}
    */
-  assign(tasks) {
+  assign(tasks, runningCounts = {}) {
     const assignments = [];
     for (const task of tasks) {
-      const agentName = this._selectAgent(task);
+      const agentName = this.selectAgent(task, runningCounts);
       if (agentName) {
         this._assignedCounts.set(agentName, (this._assignedCounts.get(agentName) ?? 0) + 1);
+        // Track for the next task in this batch
+        runningCounts[agentName] = (runningCounts[agentName] ?? 0) + 1;
         assignments.push({ task, agentName });
       }
     }
@@ -52,26 +55,36 @@ export class AgentRouter {
   /**
    * Select the best agent for a single task.
    * @param {Object} task
+   * @param {Object} [runningCounts={}]
    * @returns {string|null}
    */
-  _selectAgent(task) {
+  selectAgent(task, runningCounts = {}) {
+    // 1. Prioritize forced_agent
+    if (task.forced_agent && this.adapters.has(task.forced_agent)) {
+      return task.forced_agent;
+    }
+
     const agentNames = Array.from(this.adapters.keys());
     const prev = task.previous_agents ?? [];
 
-    // 1. Capable + fresh agents
-    if (task.type) {
-      const capableFresh = agentNames.filter(name =>
-        this._hasCapability(name, task.type) && !prev.includes(name)
-      );
-      if (capableFresh.length > 0) return this._pickByQuota(capableFresh);
-    }
+    // 2. Filter by capability and concurrency limits (respecting previous_agents)
+    const capableFresh = agentNames.filter(name => {
+      const capable = !task.type || this._hasCapability(name, task.type);
+      const underLimit = (runningCounts[name] ?? 0) < (this.agentsConfig[name]?.concurrency ?? Infinity);
+      const fresh = !prev.includes(name);
+      return capable && underLimit && fresh;
+    });
+    if (capableFresh.length > 0) return this._pickByQuota(capableFresh);
 
-    // 2. Any fresh agent
-    const fresh = agentNames.filter(name => !prev.includes(name));
-    if (fresh.length > 0) return this._pickByQuota(fresh);
+    // 3. Fallback: relax previous_agents constraint
+    const capableFallback = agentNames.filter(name => {
+      const capable = !task.type || this._hasCapability(name, task.type);
+      const underLimit = (runningCounts[name] ?? 0) < (this.agentsConfig[name]?.concurrency ?? Infinity);
+      return capable && underLimit;
+    });
+    if (capableFallback.length > 0) return this._pickByQuota(capableFallback);
 
-    // 3. Force-assign (all tried before — pick by quota)
-    return this._pickByQuota(agentNames);
+    return null;
   }
 
   /**
@@ -127,6 +140,9 @@ export class AgentRouter {
       }
       if (!Number.isInteger(agent.quota) || agent.quota < 0 || agent.quota > 100) {
         throw new Error(`Agent '${agent.name}' must have a 'quota' number between 0 and 100`);
+      }
+      if (agent.concurrency !== undefined && (!Number.isInteger(agent.concurrency) || agent.concurrency < 1)) {
+        throw new Error(`Agent '${agent.name}' must have a 'concurrency' integer >= 1`);
       }
     }
   }
