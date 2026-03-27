@@ -32,18 +32,20 @@ export class WorktreeManager {
   }
 
   /**
-   * Resolve the base branch (main or master) once and cache it.
+   * Resolve the base branch — always returns the currently checked-out branch
+   * so worker worktrees fork from whatever branch the Tech Lead is on
+   * (feature branch, not necessarily master).
    * @returns {Promise<string>}
    */
   async _getBaseBranch() {
-    if (this._baseBranch) return this._baseBranch;
     try {
-      const { stdout } = await this._git(['branch', '--list', 'main']);
-      this._baseBranch = stdout.trim() ? 'main' : 'master';
+      const { stdout } = await this._git(['rev-parse', '--abbrev-ref', 'HEAD']);
+      const branch = stdout.trim();
+      // HEAD is detached or empty — fall back to master
+      return branch && branch !== 'HEAD' ? branch : 'master';
     } catch {
-      this._baseBranch = 'master';
+      return 'master';
     }
-    return this._baseBranch;
   }
 
   /**
