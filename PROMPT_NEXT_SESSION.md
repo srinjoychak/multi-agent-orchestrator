@@ -133,7 +133,79 @@ their backoff expires.
 `src/monitor/index.js` already exists. Connect it so `workforce_status()` returns
 heartbeat data, stuck-container alerts, and per-agent utilization, not just raw docker ps.
 
-### 5. End-to-end test via MCP (1 session)
+### 5. Fix worktree lifecycle — orphan cleanup (45 min)
+
+**Current state (verified 2026-03-27):**
+`git worktree list` shows 3 stale worktrees left over from previous sessions:
+- `.worktrees/claude-code-T1` (branch `agent/claude-code/T1`)
+- `.worktrees/gemini-T2` (branch `agent/gemini/T2`)
+- `.worktrees/gemini-T4` (branch `agent/gemini/T4`)
+
+**Root cause — 4 gaps in the current design:**
+
+| Gap | Where | Effect |
+|-----|--------|--------|
+| `task_reject()` does not prune the old worktree | `orchestrator/core.js rejectTask()` | Rejected task re-runs into an existing dirty worktree instead of a clean one |
+| Failed tasks (never accepted/rejected) leave orphan worktrees | `_runTask()` on failure | Worktree + branch pile up after each failed job |
+| No end-of-job sweep | `executeTasks()` after loop exits | Any task not explicitly accepted keeps its worktree alive forever |
+| `reset-state` clears DB but not `.worktrees/` | `package.json reset-state` script | Disk fills up; git complains about stale worktree registrations |
+
+**Proposed fixes (all in `src/`):**
+
+**Fix A — Prune on reject** (`src/orchestrator/core.js`):
+```js
+async rejectTask(taskId, reason) {
+  const task = await this.taskManager.getTask(taskId);
+  // Prune old worktree so the next agent gets a clean slate
+  if (task.assigned_to) {
+    await this.worktreeManager.prune(taskId, task.assigned_to).catch(() => {});
+  }
+  return this.taskManager.rejectTask(taskId, reason);
+}
+```
+
+**Fix B — Prune on task failure** (`src/orchestrator/core.js _runTask()`):
+After marking a task as `failed` (not retrying), immediately prune its worktree:
+```js
+await this.worktreeManager.prune(task.id, agentName).catch(() => {});
+```
+
+**Fix C — End-of-job sweep** (`src/orchestrator/core.js executeTasks()`):
+After the execution loop exits (all tasks terminal), prune any worktrees whose
+tasks are in `failed` state (accepted tasks are already pruned by `task_accept`):
+```js
+// After the while loop:
+const finalTasks = jobId
+  ? await this.taskManager.getJobTasks(jobId)
+  : await this.taskManager.getTasks();
+for (const t of finalTasks.filter(t => t.status === 'failed' && t.assigned_to)) {
+  await this.worktreeManager.prune(t.id, t.assigned_to).catch(() => {});
+}
+```
+
+**Fix D — reset-state also cleans worktrees** (`package.json`):
+```json
+"reset-state": "npm run kill-mcp; git worktree prune; git branch -D $(git branch --list 'agent/*' | tr -d ' *') 2>/dev/null; rm -rf ~/.local/share/multi-agent-orchestrator-v3 .worktrees && echo 'State cleared'"
+```
+
+**Fix E — Add `task_cleanup` MCP tool** (optional, for manual recovery):
+A new tool that prunes all worktrees for terminal tasks (done/failed) without
+merging them. Useful when you want to discard a whole job's output.
+
+**Test after implementing:**
+```bash
+# Before: should show 3 stale worktrees
+git worktree list
+
+# After reset-state fix:
+npm run reset-state
+git worktree list  # should show only the main worktree
+git branch | grep agent/  # should be empty
+```
+
+---
+
+### 6. End-to-end test via MCP (1 session)
 With all fixes in place, run a real multi-task job through the full MCP pipeline:
 - Create feature branch
 - Call `orchestrate()` with a non-trivial 3-task prompt
