@@ -15,7 +15,7 @@
  */
 
 import { join, resolve } from 'node:path';
-import { mkdir, mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -132,6 +132,18 @@ export class Orchestrator {
     this.taskManager.addJob(jobId, userPrompt);
     console.log(`[orchestrator] Job ${jobId} started`);
 
+    // Hot-reload agents.json (Gap 7)
+    const agentsJson = await this._loadAgentsJson();
+    for (const [name, defaults] of Object.entries(DEFAULT_AGENTS)) {
+      const override = agentsJson[name] ?? {};
+      this.agents.set(name, { ...defaults, ...override, name });
+    }
+    // Rebuild router with updated config
+    const adapterMap = new Map(
+      Array.from(this.agents.entries()).map(([name, cfg]) => [name, { capabilities: cfg.capabilities }])
+    );
+    this.router = new AgentRouter(adapterMap, Object.fromEntries(this.agents));
+
     const tasks = await this.decomposeTasks(userPrompt, jobId);
     await this.executeTasks({ ...options, jobId });
 
@@ -162,6 +174,24 @@ export class Orchestrator {
       }]);
     }
 
+    // Gather project context (Gap 3)
+    let projectContext = '';
+    try {
+      const pkgPath = join(this.projectRoot, 'package.json');
+      const pkgRaw = await readFile(pkgPath, 'utf-8');
+      const pkg = JSON.parse(pkgRaw);
+      const { stdout: srcFiles } = await execFileAsync('find', ['src', '-name', '*.js', '-not', '-path', '*/node_modules/*'], { cwd: this.projectRoot });
+      projectContext = [
+        '',
+        'Project context (do not change these):',
+        `- Module system: ${pkg.type === 'module' ? 'ESM (import/export, .js extensions required)' : 'CommonJS (require)'}`,
+        `- Runtime: Node.js ${process.version}`,
+        `- Existing source files:\n${srcFiles.trim().split('\n').map(f => '  ' + f).join('\n')}`,
+        `- Test framework: node:test (built-in, no jest/mocha)`,
+        `- Dependencies: ${Object.keys(pkg.dependencies ?? {}).join(', ')}`,
+      ].join('\n');
+    } catch { /* non-fatal */ }
+
     const planPrompt = [
       'Decompose the following software engineering request into discrete, parallelizable tasks.',
       '',
@@ -171,6 +201,10 @@ export class Orchestrator {
       '3. Tasks must NOT touch the same files.',
       '4. Express dependencies via "depends_on": ["T1"].',
       '5. type must be one of: code, refactor, test, review, debug, research, docs, analysis',
+      '6. In each task description, list the exact files the task will create or modify.',
+      '7. No two tasks may list the same file — tasks that share files must use depends_on.',
+      '',
+      projectContext,
       '',
       'Schema: [{"id":"T1","title":"<60 chars","description":"detailed instructions","type":"code","depends_on":[]}]',
       '',
@@ -257,6 +291,9 @@ export class Orchestrator {
     while (true) {
       iteration++;
       const elapsed = Date.now() - startTime;
+
+      // Move retry-queue tasks back to pending if their backoff expires (Gap 8)
+      this.taskManager.retryDue();
 
       // Circuit breaker: max iterations
       if (iteration > maxIterations) {
@@ -386,6 +423,23 @@ export class Orchestrator {
   }
 
   /**
+   * Permanently discard a completed task without re-queuing.
+   * @param {string} taskId
+   * @returns {Promise<Object>}
+   */
+  async discardTask(taskId) {
+    const task = await this.taskManager.getTask(taskId);
+    if (task.assigned_to) {
+      await this.worktreeManager.prune(taskId, task.assigned_to).catch(() => {});
+    }
+    // Force to failed with retries exhausted so it cannot be re-queued
+    this.taskManager.db.prepare(
+      `UPDATE tasks SET status = 'failed', retries = max_retries WHERE id = ?`
+    ).run(taskId);
+    return { discarded: true };
+  }
+
+  /**
    * Re-queue a task with rejection reason.
    * @param {string} taskId
    * @param {string} reason
@@ -428,6 +482,9 @@ export class Orchestrator {
     const killed = await this.docker.kill(task.container_id);
     if (killed) {
       await this.taskManager.updateStatus(taskId, 'failed').catch(() => {});
+      if (task.assigned_to) {
+        await this.worktreeManager.prune(taskId, task.assigned_to).catch(() => {});
+      }
     }
     return { killed, container_id: task.container_id };
   }
@@ -461,6 +518,23 @@ export class Orchestrator {
       // Create worktree
       const { path: worktreePath } = await this.worktreeManager.create(task.id, agentName);
 
+      // Overwrite GEMINI.md in the worktree with a minimal worker-safe stub (Gap 1)
+      if (agentName === 'gemini') {
+        const geminiMdPath = join(worktreePath, 'GEMINI.md');
+        if (existsSync(geminiMdPath)) {
+          await writeFile(
+            geminiMdPath,
+            [
+              '# Worker Agent',
+              'You are a worker agent executing a specific coding task.',
+              'Your complete instructions are in the -p prompt.',
+              'Do NOT use MCP tools. Do not follow Tech Lead protocols.',
+              'Execute the task, commit, and exit.',
+            ].join('\n')
+          );
+        }
+      }
+
       // Build CLI prompt
       const prompt = this._buildPrompt(task, agentName, worktreePath);
       const cliArgs = agentCfg.cliArgs(prompt);
@@ -480,6 +554,15 @@ export class Orchestrator {
         cliArgs,
         options: { timeoutMs: agentCfg.timeoutMs, image: agentCfg.image },
       });
+
+      // Reset GEMINI.md so it is not committed as a change (Gap 1)
+      if (agentName === 'gemini') {
+        const geminiMdPath = join(worktreePath, 'GEMINI.md');
+        if (existsSync(geminiMdPath)) {
+          await execFileAsync('git', ['checkout', '--', 'GEMINI.md'], { cwd: worktreePath })
+            .catch(() => {});
+        }
+      }
 
       // Parse output
       const parsed = agentCfg.parseOutput(runResult.stdout, runResult.stderr, runResult.duration_ms);
@@ -571,7 +654,7 @@ export class Orchestrator {
   async _runPlanner(prompt, workDir) {
     // Try Gemini first (free tier — saves Claude quota)
     try {
-      return await this._runCLI('gemini', ['-p', prompt, '-y'], workDir, 60_000);
+      return await this._runCLI('gemini', ['-p', prompt, '--approval-mode', 'yolo'], workDir, 60_000);
     } catch {
       // Fall back to Claude
       return this._runCLI('claude', ['--print', '-p', prompt, '--output-format', 'json'], workDir, 60_000);
