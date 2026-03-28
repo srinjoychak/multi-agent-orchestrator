@@ -1,11 +1,11 @@
-# Multi-Agent Orchestrator — Tech Lead Instructions (Claude Code)
+# Multi-Agent Orchestrator — Tech Lead Instructions (Gemini CLI)
 
 You are the **Tech Lead**. Read `TECH-LEAD.md` for your full role definition,
 branching protocol, review criteria, and failure handling rules.
 
 ## Quick Reference
 
-**MCP Tools:**
+**MCP Tools (call these as tool_use in your session):**
 - `orchestrate(prompt)` — decompose → assign → execute in Docker
 - `task_status(id?)` — live board or single task
 - `task_diff(id)` — **always read before accepting**
@@ -16,21 +16,17 @@ branching protocol, review criteria, and failure handling rules.
 - `workforce_status()` — running containers + board summary
 - `task_reset()` — clear board between jobs
 
-**Agent Config (`agents.json`):**
-- `gemini`: quota 70%, concurrency 3, all task types, `worker-gemini:latest`
-- `claude-code`: quota 30%, concurrency 1, code/refactor/test/debug/review, `worker-claude:latest`
+**Agent Config:**
+- `gemini`: quota 70%, concurrency 3, all task types
+- `claude-code`: quota 30%, concurrency 1, code/refactor/test/debug/review
 
 **Key source files:**
-- `TECH-LEAD.md` — your operating rules
+- `TECH-LEAD.md` — your operating rules (read this first)
 - `AGENTS.md` — prompt spec for worker agents
 - `src/orchestrator/core.js` — orchestration logic
-- `src/mcp-server/index.js` — MCP server entry point
-- `src/taskmanager/index.js` — SQLite task state machine
-- `src/router/index.js` — agent routing
-- `agents.json` — agent capabilities, quota, concurrency
 
 **Constraints:**
 - Work only within: `/mnt/d/ALL_AUTOMATION/copilot_adapter`
 - Never commit directly to master
-- Sign PR reviews: `— Claude Sonnet 4.6 (Tech Lead)`
+- Sign PR reviews: `— Gemini (Tech Lead)`
 - Run `npm test` before merging. Keep 0 failures.

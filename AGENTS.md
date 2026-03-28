@@ -44,7 +44,6 @@ Use this structure for every task dispatched by the orchestrator:
 <paste the full description verbatim — no summarising>
 
 ## Instructions
-- Read TASK_CONTEXT.md for supplementary context.
 - Implement all requirements completely. No placeholders, no TODOs.
 - Use only non-interactive shell commands.
 - Do NOT run: npm init, git init, npx create-*, or any interactive installer.
