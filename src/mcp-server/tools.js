@@ -100,6 +100,11 @@ export const TOOLS = [
       properties: {},
     },
   },
+  {
+    name: 'task_reset',
+    description: 'Clear all tasks and jobs from the database without restarting the server.',
+    inputSchema: { type: 'object', properties: {} },
+  },
 ];
 
 /**
@@ -174,6 +179,12 @@ export async function handleTool(toolName, args, orchestrator, docker) {
       const containers = await docker.listWorkers();
       const summary = await orchestrator.taskManager.getSummary();
       return { containers, summary };
+    }
+
+    case 'task_reset': {
+      orchestrator.taskManager.clear();
+      await orchestrator.worktreeManager.reset();
+      return { cleared: true, message: 'All tasks, jobs, and worktrees cleared.' };
     }
 
     default:

@@ -17,7 +17,7 @@
     "test:unit": "node --test src/**/*.test.js",
     "test:integration": "node --test tests/**/*.test.js",
     "kill-mcp": "pkill -f 'node src/mcp-server/index.js' || true",
-    "reset-state": "rm -rf ~/.local/share/multi-agent-orchestrator-v3 && echo 'State cleared'"
+    "reset-state": "npm run kill-mcp 2>/dev/null; git worktree list --porcelain | grep '^worktree ' | grep '.worktrees' | awk '{print $2}' | xargs -r -n 1 git worktree remove --force 2>/dev/null; git branch --list 'agent/*' | tr -d ' +*' | xargs -r -n 1 git branch -D 2>/dev/null; rm -rf ~/.local/share/multi-agent-orchestrator-v3 && echo 'State cleared'"
   },
   "keywords": [
     "ai-agents",

@@ -351,6 +351,14 @@ export class Orchestrator {
         await new Promise(r => setTimeout(r, this.pollIntervalMs));
       }
     }
+
+    // End-of-job sweep: prune worktrees for all failed tasks
+    const finalTasks = jobId
+      ? await this.taskManager.getJobTasks(jobId)
+      : await this.taskManager.getTasks();
+    for (const t of finalTasks.filter(t => t.status === 'failed' && t.assigned_to)) {
+      await this.worktreeManager.prune(t.id, t.assigned_to).catch(() => {});
+    }
   }
 
   /**
@@ -382,6 +390,10 @@ export class Orchestrator {
    * @param {string} reason
    */
   async rejectTask(taskId, reason) {
+    const task = await this.taskManager.getTask(taskId);
+    if (task.assigned_to) {
+      await this.worktreeManager.prune(taskId, task.assigned_to).catch(() => {});
+    }
     return this.taskManager.rejectTask(taskId, reason);
   }
 
