@@ -1,296 +1,624 @@
-# Multi-Agent Orchestrator — Design Document
-
-## Project: copilot_adapter (POC v1)
-
-### Vision
-
-A vendor-neutral orchestration layer that coordinates heterogeneous AI coding agents
-(Claude Code, Gemini CLI, and future agents) working as a team on software engineering
-tasks. Each agent operates through a standardized adapter interface, communicates via
-a shared file-based protocol, and works in isolated git worktrees to avoid conflicts.
+# Multi-Agent Orchestrator — Design Document v3
+_Last updated: 2026-03-27_
 
 ---
 
-## Architecture Overview
+## Vision
+
+A vendor-neutral orchestration layer that coordinates heterogeneous AI coding agents
+(Claude Code, Gemini CLI, Codex, and future agents) working as a **team** on software
+engineering tasks. The system is **MCP-native**, runs workers in **Docker containers**
+for isolation and TTY reliability, uses **git worktrees** for zero-conflict parallelism,
+and is operable from **any MCP-capable chat interface** (Claude Code, Gemini CLI, etc.).
+
+### Core Value Proposition
+
+Developers who pay for multiple AI subscriptions (Claude Max, Gemini Advanced, GitHub
+Copilot) can use them as a coordinated workforce — routing work by capability, balancing
+quota, **optimizing token usage**, and reviewing results — at zero marginal cost.
+
+### Guiding Principles
+
+1. **Token optimization above all.** Every design decision must minimize wasted tokens.
+   Small, focused prompts. Minimal context files. Route commodity tasks to free-tier agents.
+2. **MCP-native.** The orchestrator is an MCP server. Any MCP client can be the Tech Lead.
+3. **Docker-isolated.** Workers run in containers. No subprocess TTY/stdin hacks.
+4. **Cross-vendor.** Claude, Gemini, Codex — same interface, same workflow.
+5. **Observable workforce.** Heartbeat, logs, kill switches. No silent hangs.
+
+---
+
+## Architecture Evolution
+
+### v1 (CLI verbs) — Failed
+```
+User → Claude Code Chat → node orchestrator.js <verb> → spawns subprocesses
+```
+Failed because: Gemini hangs (stdin pipe), CLAUDE.md overwrite, environment bleed,
+no heartbeat, file-based polling races. See RESEARCH_ANALYSIS.md for full post-mortem.
+
+### v2 (MCP server + subprocesses) — Designed, not built
+Solved the Tech Lead interface (MCP tools instead of CLI verbs) but kept subprocess
+spawning for workers. Did not solve the fundamental TTY problem.
+
+### v3 (MCP server + Docker workers) — Current design
+Docker containers solve TTY/stdin/process-tree issues in one shot. The orchestrator
+MCP server is hosted inside Docker MCP Toolkit — no separate hosting.
+
+---
+
+## v3 Architecture
 
 ```
-┌──────────────────────────────────────────────────┐
-│              User / CLI Interface                 │
-│         (node orchestrator.js "prompt")           │
-└──────────────────┬───────────────────────────────┘
-                   │
-┌──────────────────▼───────────────────────────────┐
-│              Orchestrator (Leader)                │
-│                                                   │
-│  ┌─────────────┐ ┌──────────────┐ ┌───────────┐ │
-│  │ Task Planner │ │ Task Manager │ │  Merger   │ │
-│  │ (decompose)  │ │ (assign/     │ │ (combine  │ │
-│  │              │ │  monitor)    │ │  results) │ │
-│  └─────────────┘ └──────────────┘ └───────────┘ │
-│                                                   │
-│  ┌──────────────────────────────────────────────┐ │
-│  │         Communication Layer (Comms)           │ │
-│  │    File-based IPC  ←→  (future: MQTT)        │ │
-│  └──────────────────────────────────────────────┘ │
-└──────────┬──────────────────┬────────────────────┘
-           │ spawns           │ spawns
-     ┌─────▼─────┐     ┌─────▼─────┐
-     │  Adapter   │     │  Adapter   │
-     │  Claude    │     │  Gemini    │
-     │  Code      │     │  CLI       │
-     └─────┬─────┘     └─────┬─────┘
-           │                  │
-     ┌─────▼─────┐     ┌─────▼─────┐
-     │ git        │     │ git        │
-     │ worktree   │     │ worktree   │
-     │ branch-1   │     │ branch-2   │
-     └───────────┘     └───────────┘
++-------------------------------------------------------------+
+|                    DEVELOPER (You)                           |
+|            "Build me a REST API with auth"                   |
++----------------------------+--------------------------------+
+                             | natural language
+                             v
++-------------------------------------------------------------+
+|       TECH LEAD  (Claude Code  OR  Gemini CLI)              |
+|                                                             |
+|  Any MCP-capable chat interface. Calls orchestrator tools.  |
+|  Not hardcoded to Claude — Gemini can be Tech Lead too.     |
++----------------------------+--------------------------------+
+                             | MCP (JSON-RPC over stdio)
+                             v
++-------------------------------------------------------------+
+|       ORCHESTRATOR MCP SERVER                               |
+|       (Node.js — hosted in Docker MCP Toolkit)              |
+|                                                             |
+|  MCP Tools:                                                 |
+|    orchestrate(prompt)      - full pipeline                 |
+|    task_status()            - live board                    |
+|    task_diff(id)            - git diff of worktree          |
+|    task_accept(id)          - merge to main                 |
+|    task_reject(id, reason)  - re-queue with feedback        |
+|    task_logs(id)            - stdout/stderr tail            |
+|    task_kill(id)            - force-stop a worker           |
+|    workforce_status()       - all containers + health       |
+|                                                             |
+|  Internal Modules:                                          |
+|    +---------------+ +----------------+ +---------------+   |
+|    | Task Manager  | | Docker Runner  | | Worktree Mgr  |  |
+|    | (SQLite)      | | (spawn/monitor | | (create/merge |  |
+|    |               | |  /kill workers)| |  /prune)      |  |
+|    +---------------+ +----------------+ +---------------+   |
+|    +---------------+ +----------------+                     |
+|    | Token Tracker | | Agent Router   |                     |
+|    | (usage/cost)  | | (caps + quota) |                     |
+|    +---------------+ +----------------+                     |
++----------------------------+--------------------------------+
+                             | docker run --rm -t
+               +-------------+-------------+
+               |                           |
+               v                           v
+    +--------------------+    +------------------------+
+    |  CLAUDE WORKER     |    |  GEMINI WORKER         |
+    |  (Docker container)|    |  (Docker container)    |
+    |                    |    |                        |
+    |  image: worker-    |    |  image: worker-        |
+    |    claude:latest   |    |    gemini:latest       |
+    |                    |    |                        |
+    |  - Real TTY (-t)   |    |  - Real TTY (-t)      |
+    |  - Volume: worktree|    |  - Volume: worktree   |
+    |  - Auth via mount  |    |  - Auth via mount     |
+    |  - Auto-removed    |    |  - Auto-removed       |
+    |  - Timeout enforced|    |  - Timeout enforced   |
+    +--------------------+    +------------------------+
+               |                           |
+               +-----------+---------------+
+                           | git merge (on task_accept)
+                           v
+                   +---------------+
+                   |  main branch  |
+                   +---------------+
 ```
 
 ---
 
 ## Core Components
 
-### 1. Orchestrator (`src/orchestrator/index.js`)
+### 1. Orchestrator MCP Server (`src/mcp-server/index.js`)
 
-The central coordinator. Responsibilities:
-- Parse user request into a structured task plan
-- Decompose work into independent, assignable tasks
-- Select which adapter handles which task (round-robin for v1, smart assignment later)
-- Monitor task progress via file-system watchers
-- Merge results when all tasks complete
-- Maintain a structured session log
+Persistent Node.js process hosted in Docker MCP Toolkit. Exposes tools to any MCP client.
 
-**Does NOT**: execute any AI work itself. It is purely a coordinator.
+**MCP Tools:**
 
-### 2. Task Manager (`src/taskmanager/`)
+| Tool | Input | Output | Description |
+|---|---|---|---|
+| `orchestrate` | `{prompt, strategy?}` | `{tasks, status}` | Decompose + assign + execute full pipeline |
+| `task_status` | `{id?}` | `TaskBoard` | All tasks or single task detail |
+| `task_diff` | `{id}` | `{diff, files}` | Git diff of completed worktree |
+| `task_accept` | `{id}` | `{merged, conflicts?}` | Merge worktree branch to main |
+| `task_reject` | `{id, reason}` | `{task, re_queued}` | Re-queue with rejection context |
+| `task_logs` | `{id, tail?}` | `{stdout, stderr}` | Last N lines of worker output |
+| `task_kill` | `{id}` | `{killed, container_id}` | Force-stop a running worker |
+| `workforce_status` | — | `{agents, containers}` | Live health of all workers |
 
-Manages the shared task list as a JSON file.
+**Token Optimization Strategy:**
+- `orchestrate` accepts an optional `strategy` field: `"parallel"` (default), `"sequential"`, `"swarm"` (all agents same task, best result wins)
+- The decomposition prompt is minimal — no schema examples, no role-play preamble
+- Worker context files contain only task description + constraints (no project history)
 
-**Task Schema:**
+### 2. Docker Runner (`src/docker/runner.js`)
+
+Manages the lifecycle of worker Docker containers.
+
+**Container spawn:**
+```js
+docker run --rm -t \
+  --name worker-${agentName}-${taskId} \
+  -v ${worktreePath}:/work \
+  -v ${authDir}:/auth:ro \
+  --stop-timeout ${timeoutSec} \
+  --memory 2g \
+  worker-${agentName}:latest \
+  ${cliCommand} ${cliArgs}
+```
+
+**Key design decisions:**
+- `--rm`: container removed on exit — no cleanup needed
+- `-t`: allocates pseudo-TTY — solves all stdin/interactive-mode issues
+- `-v worktree:/work`: only the worktree is mounted, not project root
+- `-v auth:/auth:ro`: read-only auth credentials mount
+- `--stop-timeout`: Docker enforces the timeout at kernel level
+- `--memory 2g`: prevents runaway memory consumption
+
+**Monitoring:**
+- `docker inspect` polling every 10s for container health
+- `docker logs --follow` stream for real-time output capture
+- `docker stop` + `docker kill` escalation on timeout
+- Container exit code determines task success/failure
+
+### 3. Worker Docker Images
+
+**`worker-gemini` (Dockerfile.gemini):**
+```dockerfile
+FROM node:22-slim
+RUN npm install -g @google/gemini-cli@latest
+RUN mkdir -p /work /auth
+WORKDIR /work
+# Auth: mount ~/.gemini to /auth, symlink at runtime
+ENTRYPOINT ["/bin/sh", "-c", \
+  "ln -sf /auth /home/node/.gemini && exec gemini \"$@\"", "--"]
+```
+
+**`worker-claude` (Dockerfile.claude):**
+```dockerfile
+FROM node:22-slim
+RUN npm install -g @anthropic-ai/claude-code@latest
+RUN mkdir -p /work /auth
+WORKDIR /work
+ENTRYPOINT ["/bin/sh", "-c", \
+  "ln -sf /auth /home/node/.claude && exec claude \"$@\"", "--"]
+```
+
+**Auth model:**
+- Gemini: OAuth tokens in `~/.gemini/` mounted read-only to `/auth`
+- Claude: credentials in `~/.claude/` mounted read-only to `/auth`
+- No API keys in env vars or Dockerfiles — auth is always a volume mount
+
+### 4. Task Manager (`src/taskmanager/index.js`) — SQLite Migration
+
+Replaces JSON file + `proper-lockfile` with SQLite (`better-sqlite3`).
+
+**Schema:**
+```sql
+CREATE TABLE tasks (
+  id          TEXT PRIMARY KEY,
+  title       TEXT NOT NULL,
+  description TEXT,
+  type        TEXT CHECK(type IN ('code','refactor','test','review','debug','research','docs','analysis')),
+  status      TEXT CHECK(status IN ('pending','claimed','in_progress','done','failed')) DEFAULT 'pending',
+  assigned_to TEXT,
+  claimed_at  TEXT,
+  completed_at TEXT,
+  depends_on  TEXT DEFAULT '[]',   -- JSON array
+  result_ref  TEXT,
+  worktree_branch TEXT,
+  container_id TEXT,
+  retries     INTEGER DEFAULT 0,
+  max_retries INTEGER DEFAULT 3,
+  previous_agents TEXT DEFAULT '[]', -- JSON array
+  token_usage TEXT DEFAULT '{}',    -- JSON: {input, output, cache_read, cost_usd}
+  created_at  TEXT DEFAULT (datetime('now'))
+);
+```
+
+**Why SQLite:**
+- ACID transactions — no race conditions with parallel workers
+- Single file — easy to backup, inspect, reset
+- Synchronous via `better-sqlite3` — no async overhead
+- 100x faster than JSON read-parse-write-lock cycle
+
+### 5. Agent Router (`src/router/index.js`)
+
+Replaces the inline `assignTasks()` in core.js with a dedicated routing module.
+
+**Routing algorithm:**
+1. Match task type to agent capabilities
+2. Among capable agents, select by quota ratio (assigned/quota)
+3. Avoid agents that previously failed this task
+4. Token budget: if an agent's cumulative token usage exceeds its budget, deprioritize
+
+**Token optimization rules:**
+- `research`, `docs`, `analysis` → Gemini first (free tier, high token limit)
+- `code`, `refactor`, `debug` → Claude first (better at precise edits)
+- `test` → either (both competent, route by quota)
+- If task description < 200 chars, skip decomposition — execute directly
+
+### 6. Token Tracker (`src/tracker/index.js`)
+
+Records token usage per agent per task. Informs routing decisions.
+
+**Data sources:**
+- Claude: `--output-format json` includes `usage.input_tokens`, `usage.output_tokens`, `total_cost_usd`
+- Gemini: parse token counts from CLI output (format varies by version)
+
+**Stored in SQLite `token_usage` column per task. Aggregated for routing decisions.**
+
+### 7. Worktree Manager (`src/worktree/index.js`)
+
+Extracted from core.js. Manages git worktree lifecycle.
+
+```
+.worktrees/
+  claude-T1/   <- branch: agent/claude/T1
+  gemini-T2/   <- branch: agent/gemini/T2
+```
+
+Operations:
+- `create(taskId, agentName)` → `git worktree add`
+- `merge(taskId)` → `git merge --no-ff` into main
+- `diff(taskId)` → `git diff main...branch`
+- `prune(taskId)` → `git worktree remove` + `git branch -d`
+- `reset()` → remove all worktrees and agent branches
+
+### 8. Workforce Monitor (`src/monitor/index.js`)
+
+Watches all running worker containers. Reports to MCP `workforce_status` tool.
+
+- Polls `docker ps --filter name=worker-` every 10s
+- Detects stuck containers (running > 2x timeout)
+- Auto-kills containers with no output for 60s (heartbeat)
+- Publishes events: `worker.started`, `worker.completed`, `worker.failed`, `worker.killed`
+
+---
+
+## Docker MCP Toolkit Integration
+
+The orchestrator MCP server itself runs inside Docker MCP Toolkit.
+
+**Registration (docker-compose.yml or Docker MCP Toolkit UI):**
+```yaml
+services:
+  orchestrator:
+    build: ./docker/orchestrator
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock    # Docker-in-Docker
+      - /mnt/d/ALL_AUTOMATION/copilot_adapter:/project
+      - ${HOME}/.gemini:/auth/gemini:ro
+      - ${HOME}/.claude:/auth/claude:ro
+    environment:
+      - PROJECT_ROOT=/project
+    ports:
+      - "3001:3001"   # optional: web dashboard
+```
+
+**Docker MCP client connection:**
+```bash
+docker mcp client connect claude-code
+docker mcp client connect gemini
+```
+
+This makes the orchestrator tools available in both Claude Code and Gemini CLI sessions.
+
+**Docker-in-Docker:** The orchestrator container has access to the Docker socket, allowing
+it to spawn worker containers. This is the standard pattern used by CI/CD systems (Jenkins,
+GitLab Runner, etc.).
+
+---
+
+## Agent Configuration (`agents.json`)
+
 ```json
 {
-  "id": "T1",
-  "title": "Implement user authentication middleware",
-  "description": "Create Express middleware for JWT-based auth...",
-  "status": "pending",          // pending | claimed | in_progress | done | failed
-  "assigned_to": null,          // "claude-code" | "gemini" | null
-  "claimed_at": null,           // ISO timestamp
-  "completed_at": null,         // ISO timestamp
-  "depends_on": [],             // ["T0"] — blocked until dependency is done
-  "result_ref": null,           // path to result file
-  "worktree_branch": null,      // git branch name for this task
-  "retries": 0,
-  "max_retries": 1
+  "claude-code": {
+    "image": "worker-claude:latest",
+    "command": "claude",
+    "args": ["--print", "--output-format", "json", "--dangerously-skip-permissions"],
+    "quota": 30,
+    "timeoutMs": 300000,
+    "capabilities": ["code", "refactor", "test", "debug"],
+    "tokenBudget": { "maxInputPerTask": 50000, "maxOutputPerTask": 16000 },
+    "auth": { "mountFrom": "~/.claude", "mountTo": "/auth" }
+  },
+  "gemini": {
+    "image": "worker-gemini:latest",
+    "command": "gemini",
+    "args": ["-y"],
+    "quota": 70,
+    "timeoutMs": 120000,
+    "capabilities": ["research", "docs", "analysis", "code", "test"],
+    "tokenBudget": { "maxInputPerTask": 100000, "maxOutputPerTask": 32000 },
+    "auth": { "mountFrom": "~/.gemini", "mountTo": "/auth" }
+  }
 }
-```
-
-**Task State Machine:**
-```
-  pending ──► claimed ──► in_progress ──► done
-     │            │            │
-     │            │            └──► failed ──► pending (retry)
-     │            └──► pending (unclaim after timeout)
-     └──► blocked (has unresolved depends_on)
-```
-
-**Concurrency**: File-level locking via `proper-lockfile` to prevent race conditions
-when two adapters try to claim the same task.
-
-### 3. Adapters (`src/adapters/`)
-
-Each adapter implements the `AgentAdapter` interface:
-
-```typescript
-interface AgentAdapter {
-  name: string;                           // "claude-code" | "gemini"
-  isAvailable(): Promise<boolean>;        // check if CLI is installed
-  execute(task: Task, context: TaskContext): Promise<TaskResult>;
-  abort(): Promise<void>;                 // cancel running task
-}
-
-interface TaskContext {
-  workDir: string;        // git worktree path
-  branch: string;         // branch name
-  projectRoot: string;    // original project root
-  teamConfig: object;     // shared team config
-}
-
-interface TaskResult {
-  status: "done" | "failed";
-  summary: string;
-  filesChanged: string[];
-  output: string;         // raw CLI output
-  duration_ms: number;
-}
-```
-
-#### Claude Code Adapter (`src/adapters/claude-code.js`)
-- Invokes: `claude -p "<prompt>" --output-format json`
-- Works in: assigned git worktree
-- Returns: structured JSON output
-- Strengths: architecture, refactoring, complex multi-file changes
-
-#### Gemini CLI Adapter (`src/adapters/gemini.js`)
-- Invokes: `gemini -p "<prompt>" --output-format json`
-- Works in: assigned git worktree
-- Returns: structured JSON output
-- Strengths: large context window, research, analysis, security review
-
-### 4. Communication Layer (`src/comms/`)
-
-Abstracted behind a `CommChannel` interface so the transport can be swapped.
-
-```typescript
-interface CommChannel {
-  send(to: string, message: AgentMessage): Promise<void>;
-  receive(agentId: string): Promise<AgentMessage[]>;
-  broadcast(message: AgentMessage): Promise<void>;
-  subscribe(agentId: string, callback: (msg: AgentMessage) => void): void;
-}
-
-interface AgentMessage {
-  id: string;
-  from: string;          // "orchestrator" | "claude-code" | "gemini"
-  to: string;            // target agent or "broadcast"
-  type: string;          // "task_assigned" | "task_update" | "finding" | "question" | "shutdown"
-  payload: object;
-  timestamp: string;     // ISO
-}
-```
-
-#### v1: File-based transport (`FileCommChannel`)
-- Inbox directories per agent: `.agent-team/inbox/{agent-name}/`
-- Messages are JSON files named `{timestamp}-{id}.json`
-- Polling via `fs.watch` / `chokidar`
-- Broadcast writes to all inboxes
-
-#### Future: MQTT transport (`MqttCommChannel`)
-See [MQTT Design Note](#mqtt-design-note) below.
-
-### 5. Result Merger (`src/merger/`)
-
-After all tasks complete:
-- Collects result files from `.agent-team/results/`
-- Attempts to merge git branches (worktree → main branch)
-- Reports conflicts for manual resolution
-- Generates a summary report
-
----
-
-## Git Worktree Strategy
-
-Each agent gets an isolated copy of the repo:
-
-```bash
-# Orchestrator creates worktrees before spawning adapters
-git worktree add .worktrees/claude-code-T1 -b agent/claude-code/T1
-git worktree add .worktrees/gemini-T2 -b agent/gemini/T2
-```
-
-After completion:
-```bash
-# Merge successful branches
-git merge agent/claude-code/T1
-git merge agent/gemini/T2
-
-# Cleanup
-git worktree remove .worktrees/claude-code-T1
-git worktree remove .worktrees/gemini-T2
 ```
 
 ---
 
-## MQTT Design Note
+## Verified Prerequisites (2026-03-24)
 
-The user's original design proposed MQTT (Mosquitto) as the inter-agent message bus.
-This is a sound architectural choice, but **deferred to v2** for the following reasons:
+| Prerequisite | Status | Details |
+|---|---|---|
+| WSL (Linux) | OK | Linux 6.6.87.2-microsoft-standard-WSL2 |
+| Docker from WSL | OK | Docker 29.2.1, Docker Desktop backend |
+| Docker MCP Toolkit | OK | `docker mcp` CLI available, supports claude-code + gemini clients |
+| Gemini CLI (host) | OK | v0.34.0, `@google/gemini-cli`, OAuth auth |
+| Claude Code (host) | OK | v2.1.81, OAuth auth (Claude Max) |
+| Gemini in Docker | NEEDS WORK | Official sandbox image is v0.1.1 (stale). Build custom image with v0.34.0. Auth mount to `/home/node/.gemini` |
+| Claude in Docker | NEEDS WORK | Build custom image. Auth mount to `/home/node/.claude` |
+| Node.js | OK | v24.14.0 |
+| Git | OK | worktrees tested and working |
 
-### When MQTT becomes valuable
+**Critical finding:** `gemini -p "..." -y < /dev/null` works on the WSL host (completes in seconds).
+Docker `-t` flag provides equivalent TTY allocation. No more subprocess hacks needed.
 
-| Scenario | File-based | MQTT needed? |
-|----------|-----------|-------------|
-| All agents on same machine | Yes | No |
-| Agents on different machines / containers | No | **Yes** |
-| Real-time event streaming (< 10ms latency) | Polling lag | **Yes** |
-| Team size > 5 agents | Gets noisy | **Yes** |
-| CI/CD pipeline integration | Possible | **Better** |
-| Persistent message history / replay | Manual | **Yes** |
-| Fan-out to N subscribers | N file writes | **Native** |
-
-### Proposed MQTT topic structure (for v2)
-
-```
-team/{team-id}/tasks/created       — new tasks published by leader
-team/{team-id}/tasks/claimed       — agent claims a task
-team/{team-id}/tasks/status        — status updates (in_progress, done, failed)
-team/{team-id}/agent/{name}/inbox  — directed messages to specific agent
-team/{team-id}/broadcast           — all agents subscribe
-team/{team-id}/heartbeat           — agent liveness (QoS 1, retain=true)
-```
-
-### Why MQTT over Kafka for this use case
-
-- **Latency**: MQTT delivers in sub-millisecond; Kafka batches (50-200ms default)
-- **Footprint**: Mosquitto is ~5MB; Kafka needs JVM + ZooKeeper/KRaft
-- **QoS levels**: MQTT QoS 2 = exactly-once delivery per message
-- **Retained messages**: Last-known task state available to new subscribers immediately
-- **LWT (Last Will)**: Agent crash auto-publishes "agent offline" — free failure detection
-
-### Migration path
-
-The `CommChannel` interface is designed so that `FileCommChannel` can be swapped for
-`MqttCommChannel` with zero changes to orchestrator or adapter code. The adapters
-never know which transport they're using.
+**Critical finding:** Claude `--print --output-format json < /dev/null` returns structured JSON
+with full token usage and cost data. Perfect for token tracking.
 
 ---
 
-## Directory Structure
+## Token Optimization Strategy
+
+This is the **most important feature** of the system.
+
+### 1. Smart Decomposition
+- Analyze task complexity before decomposing. Simple tasks (< 200 chars) skip decomposition.
+- Decomposition prompt is minimal — schema only, no examples, no role-play.
+- Use Gemini for decomposition (free tier) unless accuracy is critical.
+
+### 2. Context Minimization
+- Worker context files contain ONLY: task title, description, constraints.
+- No project history, no previous task results, no team config.
+- Workers discover context from the code in their worktree (they're AI agents — let them read).
+
+### 3. Routing by Cost
+- Free-tier agents (Gemini) handle high-volume, low-precision tasks.
+- Premium agents (Claude) handle precision tasks (refactoring, debugging).
+- Token budget per agent per task prevents runaway consumption.
+
+### 4. Caching
+- Claude supports prompt caching (ephemeral 1h). Structure prompts to maximize cache hits.
+- Gemini context caching reduces repeated token consumption.
+- Identical decomposition prompts cached at application level (SQLite).
+
+### 5. Swarm Mode (future)
+- Multiple agents work the same task. First acceptable result wins.
+- Useful for critical tasks where correctness matters more than cost.
+- Token cost is higher but success rate is higher.
+
+---
+
+## Directory Structure (v3)
 
 ```
 copilot_adapter/
-├── .claude/
-│   └── settings.local.json       # Agent teams enabled (workspace-scoped)
-├── .agent-team/                   # Runtime state (gitignored)
-│   ├── tasks.json                 # Shared task list
-│   ├── session-log.json           # Structured leader log
-│   ├── inbox/
-│   │   ├── claude-code/           # Messages for Claude Code adapter
-│   │   └── gemini/                # Messages for Gemini adapter
-│   ├── outbox/                    # Broadcast messages
-│   └── results/                   # Task result files (T1.json, T2.json...)
-├── .worktrees/                    # Git worktrees per agent (gitignored)
-├── src/
-│   ├── orchestrator/
-│   │   └── index.js               # Main orchestrator / leader logic
-│   ├── adapters/
-│   │   ├── base.js                # AgentAdapter base class
-│   │   ├── claude-code.js         # Claude Code CLI adapter
-│   │   └── gemini.js              # Gemini CLI adapter
-│   ├── taskmanager/
-│   │   └── index.js               # Task CRUD, locking, state machine
-│   ├── comms/
-│   │   ├── channel.js             # CommChannel interface
-│   │   └── file-channel.js        # File-based implementation
-│   ├── merger/
-│   │   └── index.js               # Git merge + result aggregation
-│   └── types/
-│       └── index.js               # Shared type definitions / schemas
-├── DESIGN.md                      # This file
-├── DEVELOPMENT_PLAN.md            # Sprint plan and objectives
-├── MARKET_RESEARCH.md             # Competitive landscape
-├── package.json
-└── CLAUDE.md                      # Project instructions for Claude Code
++-- docker/
+|   +-- orchestrator/
+|   |   +-- Dockerfile            # Orchestrator MCP server image
+|   |   +-- docker-compose.yml    # Full stack definition
+|   +-- workers/
+|       +-- Dockerfile.claude     # Claude worker image
+|       +-- Dockerfile.gemini     # Gemini worker image
++-- src/
+|   +-- mcp-server/
+|   |   +-- index.js              # MCP server entry point
+|   |   +-- tools.js              # Tool definitions + handlers
+|   +-- orchestrator/
+|   |   +-- core.js               # Orchestration logic (decompose, assign, execute)
+|   |   +-- index.js              # CLI entry point (debug/testing only)
+|   +-- docker/
+|   |   +-- runner.js             # Docker container lifecycle management
+|   +-- taskmanager/
+|   |   +-- index.js              # SQLite-backed task state machine
+|   |   +-- schema.sql            # Table definitions
+|   +-- router/
+|   |   +-- index.js              # Agent capability + quota routing
+|   +-- tracker/
+|   |   +-- index.js              # Token usage tracking
+|   +-- worktree/
+|   |   +-- index.js              # Git worktree lifecycle
+|   +-- monitor/
+|   |   +-- index.js              # Workforce health monitoring
+|   +-- merger/
+|   |   +-- index.js              # Git merge logic (kept from v2)
+|   +-- types/
+|       +-- index.js              # Type definitions
++-- tests/
+|   +-- unit/
+|   +-- integration/
++-- .worktrees/                   # Git worktrees per task (gitignored)
++-- agents.json                   # Agent configuration
++-- CLAUDE.md                     # Tech Lead instructions
++-- DESIGN.md                     # This file
++-- PLAN.md                       # Development plan
 ```
 
 ---
 
-## Non-Goals (v1)
+## Non-Goals (v3)
 
-- No web UI or dashboard
-- No Saga / distributed transaction pattern (git worktrees are the isolation mechanism)
-- No MQTT (file-based communication only)
-- No GitHub Copilot CLI adapter (interactive-only, no headless mode)
-- No nested teams or team-of-teams
-- No A2A protocol compliance (evaluated for v2)
-- No smart task assignment (round-robin only)
+- No web UI (MCP tools are the interface; any MCP client is the UI)
+- No MQTT / multi-machine (all containers on same Docker host)
+- No A2A protocol (MCP is sufficient for our use case)
+- No nested teams (single orchestrator, flat worker pool)
+- No model fine-tuning or training
+
+---
+
+## v4 Architecture Plan — Job Queue + Worker Pool
+_Planned: 2026-03-27_
+
+### Motivation
+
+Production testing of the v3 workforce revealed three fundamental problems:
+
+1. **Flat task table with no job isolation** — a new `orchestrate()` call picks up stale pending tasks from previous jobs, causing wrong work to execute with wrong prompts.
+2. **Single worker per agent type** — only one gemini and one claude container run at a time. A 6-task job runs serially when it could run in parallel, wasting wall-clock time.
+3. **No forced agent routing** — `"assign ONLY to gemini"` in the prompt is ignored. The router is purely quota-weighted with no per-task override.
+
+### Core Concepts
+
+#### Job vs Task
+
+| Concept | Definition |
+|---------|-----------|
+| **Job** | One `orchestrate()` call. UUID-scoped. Contains N tasks. Completely isolated from other jobs. |
+| **Task** | A unit of work within a job. Has its own queue position, agent assignment, retry state. |
+
+A new `orchestrate()` creates a new Job with a UUID. It never touches tasks from other jobs. Stale tasks remain in their own job scope — visible, queryable, but never picked up by a different job's execution loop.
+
+#### The 4 Queues (FIFO)
+
+```
+orchestrate(prompt)
+      │
+      ▼  creates Job(uuid)
+      │
+      ├─ PENDING QUEUE   ← new tasks land here; retry queue drains here on backoff expiry
+      │       │
+      │       │  worker claims oldest matching task (atomic SQLite tx)
+      │       ▼
+      ├─ RUNNING QUEUE   ← task is executing in a Docker container
+      │       │
+      │       ├─ success → DONE QUEUE
+      │       │
+      │       └─ fail, retries left → RETRY QUEUE (with backoff timer)
+      │                                     │
+      │                                     └─ after backoff → PENDING QUEUE
+      │
+      └─ DONE QUEUE      ← permanent resting place (done or failed_permanent)
+```
+
+| Queue | Populated by | Drained by |
+|-------|-------------|------------|
+| PENDING | `orchestrate()` on new tasks; retry backoff expiry | Worker claim |
+| RUNNING | Worker claim | Worker complete/fail |
+| RETRY | Worker fail (retries remaining) | Dispatcher after `retry_after` timestamp |
+| DONE | Worker complete; max retries exhausted | Never — read-only history |
+
+#### Worker Pool — Multiple Concurrent Workers Per Agent
+
+`quota` (routing weight %) and `concurrency` (max parallel containers) are now separate:
+
+```json
+{
+  "gemini": {
+    "quota": 70,
+    "concurrency": 3
+  },
+  "claude-code": {
+    "quota": 30,
+    "concurrency": 1
+  }
+}
+```
+
+With `concurrency: 3` for gemini, the dispatcher spawns up to 3 simultaneous gemini containers, each claiming a different task from PENDING. A 6-task job can have all 6 in RUNNING simultaneously (3 gemini + 1 claude + queued for next slot). This is the **divide and conquer** model — same token usage, fraction of the wall-clock time.
+
+#### Worker Claim Protocol (Atomic, Race-Safe)
+
+```sql
+BEGIN IMMEDIATE;
+SELECT * FROM tasks
+  WHERE job_id = ? AND queue = 'pending'
+    AND (forced_agent IS NULL OR forced_agent = ?)
+    AND claimed_by IS NULL
+    AND depends_on_satisfied = 1
+  ORDER BY created_at ASC
+  LIMIT 1;
+UPDATE tasks SET queue='running', claimed_by=?, claimed_at=datetime('now') WHERE id=?;
+COMMIT;
+```
+
+SQLite serializes concurrent `BEGIN IMMEDIATE` transactions — no two workers can claim the same task.
+
+#### `forced_agent` Field
+
+A new optional task field. When set, only a worker of that type can claim the task:
+
+```json
+{ "id": "T1", "forced_agent": "gemini", "queue": "pending", ... }
+```
+
+The Tech Lead (or decomposer) sets this when routing must be deterministic. The router respects it in the claim query. Quota logic is bypassed entirely for forced tasks.
+
+### Updated Schema
+
+```sql
+-- New: jobs table
+CREATE TABLE jobs (
+  id          TEXT PRIMARY KEY,   -- UUID
+  prompt      TEXT NOT NULL,
+  status      TEXT DEFAULT 'running', -- running | done | failed
+  created_at  TEXT DEFAULT (datetime('now'))
+);
+
+-- Updated: tasks table additions
+ALTER TABLE tasks ADD COLUMN job_id       TEXT REFERENCES jobs(id);
+ALTER TABLE tasks ADD COLUMN queue        TEXT DEFAULT 'pending';
+  -- pending | running | retry | done | failed_permanent
+ALTER TABLE tasks ADD COLUMN claimed_by   TEXT;   -- worker instance ID
+ALTER TABLE tasks ADD COLUMN retry_after  TEXT;   -- ISO timestamp for retry backoff
+ALTER TABLE tasks ADD COLUMN forced_agent TEXT;   -- if set, only this agent type claims
+```
+
+### Updated Routing
+
+```
+_selectAgent(task):
+  if task.forced_agent:
+    return task.forced_agent  ← skip quota logic entirely
+
+  capable_fresh = agents where:
+    - has capability for task.type
+    - not in task.previous_agents
+    - running_count < concurrency
+  if capable_fresh: return lowest quota ratio
+
+  fresh = agents not in previous_agents with open slots
+  if fresh: return lowest quota ratio
+
+  force-assign: lowest ratio among agents with open slots
+```
+
+### What Does NOT Change
+
+The MCP tool API is identical. `orchestrate()`, `task_status()`, `task_diff()`, `task_accept()`, `task_reject()`, `task_logs()`, `task_kill()`, `workforce_status()` — same signatures, same responses. The queue architecture is an internal implementation detail invisible to Tech Leads and MCP clients.
+
+### Problems This Solves
+
+| Problem | Solution |
+|---------|---------|
+| Stale tasks from old job mixed into new job | Job UUID scoping — execution loop is per-job |
+| Retry queue destroyed by new `orchestrate()` | Retry queue is per-job; new jobs never touch it |
+| Git branch collision on same task ID | Branch name includes job UUID: `agent/gemini/JOB-abc/T1` |
+| Can't force agent type | `forced_agent` field on task |
+| Only 1 worker per agent type | `concurrency` field in agents.json |
+| Race conditions in worker claim | Atomic `BEGIN IMMEDIATE` SQLite transaction |
+| Lost observability on failed tasks | DONE queue preserves full history |
+
+### Files to Modify
+
+| File | Change |
+|------|--------|
+| `src/taskmanager/schema.sql` | Add `jobs` table; add `job_id`, `queue`, `claimed_by`, `retry_after`, `forced_agent` columns |
+| `src/taskmanager/index.js` | `addJob()`, atomic `claimTask()`, `failTask()` with retry routing, `retryDue()` |
+| `src/orchestrator/core.js` | `orchestrate()` creates Job UUID; execution loop scoped to job; dispatcher checks concurrency slots |
+| `src/router/index.js` | Add `forced_agent` check; add concurrency slot check; split quota-weight from concurrency |
+| `agents.json` | Add `concurrency` field per agent |
+| `src/docker/runner.js` | Include job UUID in container name |
+| `AGENTS.md` | Document `forced_agent` usage for Tech Leads |

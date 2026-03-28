@@ -1,25 +1,20 @@
 {
   "claude-code": {
-    "role": "developer",
-    "capabilities": [],
-    "quota": 0,
-    "models": {
-      "default": "claude-sonnet-4-6"
-    }
+    "image": "worker-claude:latest",
+    "concurrency": 1,
+    "capabilities": ["code", "refactor", "test", "debug", "review"],
+    "quota": 30,
+    "timeoutMs": 300000,
+    "tokenBudget": { "maxInputPerTask": 50000, "maxOutputPerTask": 16000 },
+    "auth": { "mountFrom": "~/.claude", "mountTo": "/home/node/.claude", "mode": "ro" }
   },
   "gemini": {
-    "role": "developer",
-    "capabilities": ["code", "refactor", "test", "debug", "docs", "research", "analysis"],
-    "quota": 100,
-    "models": {
-      "code": "gemini-2.5-pro",
-      "refactor": "gemini-2.5-pro",
-      "test": "gemini-2.5-flash",
-      "debug": "gemini-2.5-pro",
-      "docs": "gemini-2.5-flash",
-      "research": "gemini-2.5-flash",
-      "analysis": "gemini-2.5-flash",
-      "default": "gemini-2.5-pro"
-    }
+    "image": "worker-gemini:latest",
+    "concurrency": 3,
+    "capabilities": ["research", "docs", "analysis", "code", "test", "refactor", "debug", "review"],
+    "quota": 70,
+    "timeoutMs": 300000,
+    "tokenBudget": { "maxInputPerTask": 100000, "maxOutputPerTask": 32000 },
+    "auth": { "mountFrom": "~/.gemini", "mountTo": "/home/node/.gemini", "mode": "rw" }
   }
 }

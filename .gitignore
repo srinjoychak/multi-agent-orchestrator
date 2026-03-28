@@ -4,5 +4,11 @@ node_modules/
 *.lock
 .claude/settings.local.json
 
+# Ephemeral task context — written per-run, must never be committed
+TASK_CONTEXT.md
+
 # Agent task coordination files
 *-tasks.md
+GEMINI_TASK_*.md
+GEMINI_TECH_LEAD.md
+*-catalog.yaml
