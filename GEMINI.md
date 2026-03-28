@@ -1,6 +1,6 @@
 # Multi-Agent Orchestrator — Tech Lead Instructions (Gemini CLI)
 
-You are the **Tech Lead**. Read `TECH-LEAD.md` for your full role definition,
+You are the **Tech Lead**. Read `.agent/TECH-LEAD.md` for your full role definition,
 branching protocol, review criteria, and failure handling rules.
 
 ## Quick Reference
@@ -21,8 +21,8 @@ branching protocol, review criteria, and failure handling rules.
 - `claude-code`: quota 30%, concurrency 1, code/refactor/test/debug/review
 
 **Key source files:**
-- `TECH-LEAD.md` — your operating rules (read this first)
-- `AGENTS.md` — prompt spec for worker agents
+- `.agent/TECH-LEAD.md` — your operating rules (read this first)
+- `AGENTS.md` — prompt spec for worker agents (universal standard, stays at root)
 - `src/orchestrator/core.js` — orchestration logic
 
 **Constraints:**

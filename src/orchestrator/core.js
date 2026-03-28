@@ -26,7 +26,6 @@ import { TaskManager } from '../taskmanager/index.js';
 import { DockerRunner } from '../docker/runner.js';
 import { WorktreeManager } from '../worktree/index.js';
 import { AgentRouter } from '../router/index.js';
-import { ResultMerger } from '../merger/index.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -74,7 +73,6 @@ export class Orchestrator {
     this.taskManager = new TaskManager(this.stateDir);
     this.docker = new DockerRunner();
     this.worktreeManager = new WorktreeManager(this.projectRoot);
-    this.merger = new ResultMerger(this.projectRoot, join(this.stateDir, 'results'));
 
     /** @type {Map<string, Object>} agentName -> agent config */
     this.agents = new Map();
