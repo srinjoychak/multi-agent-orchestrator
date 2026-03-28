@@ -14,6 +14,9 @@
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { dirname, basename, join as pathJoin } from 'node:path';
+import { tmpdir } from 'node:os';
+import { mkdtemp, copyFile, mkdir, rm, readdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const execFileAsync = promisify(execFile);
@@ -51,6 +54,32 @@ export class DockerRunner {
   }
 
   /**
+   * Create an isolated Gemini auth directory for a single container run.
+   * Copies only credentials — deliberately excludes session history (tmp/, history/)
+   * so each worker starts with a clean context and sessions never accumulate.
+   *
+   * @param {string} sourceDir  - host ~/.gemini
+   * @returns {Promise<string>} - path to the temp dir (caller must rm -rf after use)
+   */
+  async _isolatedGeminiAuth(sourceDir) {
+    const tempDir = await mkdtemp(pathJoin(tmpdir(), 'gemini-auth-'));
+    // Files needed for authentication and Gemini CLI startup
+    const credFiles = ['oauth_creds.json', 'google_accounts.json', 'user_id', 'installation_id', 'state.json'];
+    for (const f of credFiles) {
+      const src = pathJoin(sourceDir, f);
+      if (existsSync(src)) {
+        await copyFile(src, pathJoin(tempDir, f));
+      }
+    }
+    // Worker settings override (no MCP servers, no host-specific config)
+    const workerSettings = WORKER_SETTINGS_HOST.gemini;
+    if (workerSettings && existsSync(workerSettings)) {
+      await copyFile(workerSettings, pathJoin(tempDir, 'settings.json'));
+    }
+    return tempDir;
+  }
+
+  /**
    * Spawn a worker container to execute a task.
    *
    * @param {Object} params
@@ -74,8 +103,16 @@ export class DockerRunner {
     const containerName = `worker-${agentName}-${jobIdStr}${taskId}`;
     const timeoutSec = Math.ceil(timeoutMs / 1000);
 
-    const authDir = AUTH_DIRS[agentName];
+    const sourceAuthDir = AUTH_DIRS[agentName];
     const authMount = AUTH_MOUNTS[agentName];
+
+    // For Gemini: create a per-task isolated auth dir (credentials only, no session history).
+    // This prevents cached sessions from previous tasks leaking into the new worker context.
+    // For Claude: mount the host auth dir read-only as before.
+    let tempAuthDir = null;
+    const effectiveAuthDir = agentName === 'gemini' && sourceAuthDir
+      ? (tempAuthDir = await this._isolatedGeminiAuth(sourceAuthDir), tempAuthDir)
+      : sourceAuthDir;
 
     const dockerArgs = [
       'run',
@@ -86,16 +123,17 @@ export class DockerRunner {
       '--stop-timeout', String(timeoutSec),
     ];
 
-    if (authDir && authMount) {
-      // Gemini needs rw (writes user_id, state), Claude can be ro
+    if (effectiveAuthDir && authMount) {
+      // Gemini: rw on isolated temp dir. Claude: ro on host dir.
       const mode = agentName === 'gemini' ? 'rw' : 'ro';
-      dockerArgs.push('-v', `${authDir}:${authMount}:${mode}`);
+      dockerArgs.push('-v', `${effectiveAuthDir}:${authMount}:${mode}`);
 
-      // Override settings.json inside the container so workers don't inherit
-      // host MCP server configs (host paths don't exist inside the container)
-      const workerSettings = WORKER_SETTINGS_HOST[agentName];
-      if (workerSettings) {
-        dockerArgs.push('-v', `${workerSettings}:${authMount}/settings.json:ro`);
+      // Claude still needs the settings.json override (no isolated dir for it)
+      if (agentName !== 'gemini') {
+        const workerSettings = WORKER_SETTINGS_HOST[agentName];
+        if (workerSettings) {
+          dockerArgs.push('-v', `${workerSettings}:${authMount}/settings.json:ro`);
+        }
       }
     }
 
@@ -145,9 +183,11 @@ export class DockerRunner {
         ));
       }, timeoutMs);
 
-      cp.on('exit', (code) => {
+      cp.on('exit', async (code) => {
         settle(null);
         const duration_ms = Date.now() - startTime;
+        // Clean up the per-task isolated auth dir (Gemini only)
+        if (tempAuthDir) rm(tempAuthDir, { recursive: true, force: true }).catch(() => {});
         resolve({ exitCode: code ?? 1, stdout, stderr, duration_ms, containerId: containerName });
       });
 
