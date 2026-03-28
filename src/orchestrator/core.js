@@ -15,7 +15,7 @@
  */
 
 import { join, resolve } from 'node:path';
-import { mkdir, mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, readFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -463,12 +463,6 @@ export class Orchestrator {
       // Create worktree
       const { path: worktreePath } = await this.worktreeManager.create(task.id, agentName);
 
-      // Write task context file — visible to agent read_file (no dot prefix),
-      // won't collide with project files (CLAUDE.md / GEMINI.md are reserved)
-      const ctxFile = 'TASK_CONTEXT.md';
-      const ctxContent = this._buildContextFile(task, agentName, worktreePath);
-      await writeFile(join(worktreePath, ctxFile), ctxContent, 'utf-8');
-
       // Build CLI prompt
       const prompt = this._buildPrompt(task, agentName, worktreePath);
       const cliArgs = agentCfg.cliArgs(prompt);
@@ -495,11 +489,6 @@ export class Orchestrator {
       // Detect changed files via git status in worktree
       const filesChanged = await this._getChangedFiles(worktreePath);
       parsed.filesChanged = filesChanged;
-
-      // Remove the task context file before committing — it's per-task
-      // ephemeral state and will cause merge conflicts on every task_accept().
-      const ctxPath = join(worktreePath, 'TASK_CONTEXT.md');
-      await rm(ctxPath, { force: true }).catch(() => {});
 
       // Auto-commit any uncommitted changes the agent left behind.
       if (filesChanged.length > 0) {
@@ -530,32 +519,6 @@ export class Orchestrator {
   }
 
   /**
-   * Build the task context file content for an agent.
-   */
-  _buildContextFile(task, agentName, worktreePath) {
-    return [
-      `# Task Context — ${task.id}`,
-      '',
-      `**Task:** ${task.title}`,
-      `**Type:** ${task.type}`,
-      '',
-      '## Objective',
-      task.description,
-      '',
-      '## Constraints',
-      `- Work only within: ${worktreePath}`,
-      '- Do NOT modify files outside this worktree.',
-      '- Do NOT use save_memory or write to global config files.',
-      '',
-      '## Git Instructions',
-      '- This directory is a git worktree. Use shell commands (run_shell_command) for all git operations.',
-      '- Do NOT attempt to read the .git file directly — it is a worktree pointer.',
-      '- To commit: run_shell_command("git add -A && git commit -m \\"task: ' + task.id + '\\"") ',
-      '- Git identity is pre-configured — no need to set user.name or user.email.',
-    ].join('\n');
-  }
-
-  /**
    * Build the CLI prompt for an agent.
    * Gemini reads GEMINI.md natively — keep prompt minimal.
    * Claude needs the full context in the prompt.
@@ -572,11 +535,16 @@ export class Orchestrator {
       task.description,
       '',
       '## Mandatory Instructions',
-      '- Read TASK_CONTEXT.md in the working directory for additional context.',
       '- Complete ALL requirements listed above. Do not skip or partially implement.',
       '- Write every file fully — no placeholders, no TODOs, no truncation.',
       '- Use only non-interactive shell commands (no prompts, no confirmations).',
       '- Do NOT run: npm init, git init, npx create-*, or any interactive installer.',
+      '- Do NOT use save_memory or write to global config files.',
+      '',
+      '## Git Instructions',
+      '- This directory is a git worktree. Use shell commands for all git operations.',
+      '- Do NOT attempt to read the .git file directly — it is a worktree pointer.',
+      '- Git identity is pre-configured — no need to set user.name or user.email.',
       '- When done: run `git add -A && git commit -m "task: ' + task.id + '"` in the working directory.',
       '',
       '## Completion Checklist (verify before committing)',
