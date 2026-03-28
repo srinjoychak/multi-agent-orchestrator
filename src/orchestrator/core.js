@@ -656,15 +656,45 @@ export class Orchestrator {
   }
 
   /**
-   * Get files changed in a worktree (git status --porcelain).
+   * Get files changed in a worktree — union of:
+   *   1. Uncommitted changes (git status --porcelain)
+   *   2. Files committed ahead of the base branch (git diff --name-only base...HEAD)
+   * This handles both agents that leave uncommitted changes AND agents that
+   * properly commit their work before exiting (like Gemini).
    */
   async _getChangedFiles(worktreePath) {
+    const gitOpts = { cwd: worktreePath, timeout: 5000 };
+    const files = new Set();
+
+    // 1. Uncommitted changes
     try {
-      const { stdout } = await execFileAsync('git', ['status', '--porcelain'], { cwd: worktreePath, timeout: 5000 });
-      return stdout.split('\n').map(l => l.slice(3).trim()).filter(Boolean);
-    } catch {
-      return [];
-    }
+      const { stdout } = await execFileAsync('git', ['status', '--porcelain'], gitOpts);
+      for (const line of stdout.split('\n')) {
+        const f = line.slice(3).trim();
+        if (f) files.add(f);
+      }
+    } catch { /* ignore */ }
+
+    // 2. Committed changes ahead of base branch
+    try {
+      const { stdout: base } = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], gitOpts);
+      const currentBranch = base.trim();
+      // Find the merge-base with master/main to diff only this branch's commits
+      const { stdout: mergeBase } = await execFileAsync(
+        'git', ['merge-base', 'HEAD', 'master'], gitOpts
+      ).catch(() => execFileAsync('git', ['merge-base', 'HEAD', 'main'], gitOpts));
+      const sha = mergeBase.trim();
+      if (sha) {
+        const { stdout: diffOut } = await execFileAsync(
+          'git', ['diff', '--name-only', sha, 'HEAD'], gitOpts
+        );
+        for (const f of diffOut.split('\n').map(l => l.trim()).filter(Boolean)) {
+          files.add(f);
+        }
+      }
+    } catch { /* ignore — branch may have no commits yet */ }
+
+    return [...files];
   }
 
   _extractJsonArray(text) {
