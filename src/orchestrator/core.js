@@ -16,7 +16,7 @@
 
 import { join, resolve } from 'node:path';
 import { mkdir, mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
