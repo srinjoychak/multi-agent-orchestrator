@@ -648,8 +648,6 @@ export class Orchestrator {
 
     // 2. Committed changes ahead of base branch
     try {
-      const { stdout: base } = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], gitOpts);
-      const currentBranch = base.trim();
       // Find the merge-base with master/main to diff only this branch's commits
       const { stdout: mergeBase } = await execFileAsync(
         'git', ['merge-base', 'HEAD', 'master'], gitOpts
