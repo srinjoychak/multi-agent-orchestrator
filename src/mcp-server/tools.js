@@ -70,6 +70,17 @@ export const TOOLS = [
     },
   },
   {
+    name: 'task_discard',
+    description: 'Permanently discard a completed task without re-queuing. Use when output is manually handled or the task is no longer needed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Task ID' },
+      },
+      required: ['id'],
+    },
+  },
+  {
     name: 'task_logs',
     description: 'Get the last N lines of stdout/stderr from a running or recently completed worker container.',
     inputSchema: {
@@ -163,6 +174,11 @@ export async function handleTool(toolName, args, orchestrator, docker) {
     case 'task_reject': {
       const task = await orchestrator.rejectTask(args.id, args.reason);
       return { task_id: args.id, status: task.status, message: `Re-queued with reason: ${args.reason}` };
+    }
+
+    case 'task_discard': {
+      const result = await orchestrator.discardTask(args.id);
+      return { task_id: args.id, ...result };
     }
 
     case 'task_logs': {

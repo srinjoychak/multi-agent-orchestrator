@@ -11,6 +11,7 @@ branching protocol, review criteria, and failure handling rules.
 - `task_diff(id)` — **always read before accepting**
 - `task_accept(id)` — merge into current feature branch
 - `task_reject(id, reason)` — re-queue with specific feedback
+- `task_discard(id)` — permanently close task, no re-queue
 - `task_logs(id, tail?)` — container stdout/stderr
 - `task_kill(id)` — force-stop hung container
 - `workforce_status()` — running containers + board summary
