@@ -250,6 +250,7 @@ export class Orchestrator {
     const startTime = Date.now();
     let iteration = 0;
     let lastStateHash = '';
+    let stuckCount = 0;
 
     const getTasks = () => jobId
       ? this.taskManager.getJobTasks(jobId)
@@ -276,12 +277,14 @@ export class Orchestrator {
       // Circuit breaker: stuck detection — if task states haven't changed in 3 consecutive iterations
       const stateHash = allTasks.map(t => `${t.id}:${t.status}:${t.retries}`).join('|');
       if (stateHash === lastStateHash) {
-        // Check if everything that's not done/failed is just stuck
+        stuckCount++;
         const active = allTasks.filter(t => t.status !== 'done' && t.status !== 'failed');
-        if (active.length === 0 || iteration > 3) {
-          console.error(`[orchestrator] Circuit breaker: task states unchanged for consecutive iterations. Stopping.`);
+        if (active.length === 0 || stuckCount >= 3) {
+          console.error(`[orchestrator] Circuit breaker: task states unchanged for ${stuckCount} consecutive iterations. Stopping.`);
           break;
         }
+      } else {
+        stuckCount = 0;
       }
       lastStateHash = stateHash;
 
