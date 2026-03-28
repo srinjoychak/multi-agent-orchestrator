@@ -59,8 +59,13 @@ git merge --no-ff feat/<short-description> -m "feat: <description>"
 
 ## Decomposition Rules
 
+**Before writing any worker prompt, read `AGENTS.md`.** It defines the standard
+prompt template, agent-specific quirks (Gemini vs Claude), what causes auto-retry,
+and per-agent CLI flags. Your prompts must follow that template.
+
 Before calling `orchestrate()`:
 
+- [ ] Does the prompt follow the standard template in `AGENTS.md`?
 - [ ] Does the prompt include **full requirements** (not a reference to another document)?
 - [ ] Are all target file paths listed explicitly (absolute paths inside `/work`)?
 - [ ] Is the commit instruction present (`git add -A && git commit -m "task: <id>"`)?
@@ -70,8 +75,8 @@ Before calling `orchestrate()`:
 - [ ] Is `task_reset()` called if a prior run left stale tasks on the board?
 
 Prompts must be **self-contained**. The agent's working memory is only what is in
-the prompt. Never write "see AGENTS.md" or "see TASK_CONTEXT.md" — the agent
-cannot reliably access those files, and they may be gitignored.
+the prompt. Never tell an agent to "read AGENTS.md" or any other file — workers
+cannot reliably access project files (they may be gitignored or outside `/work`).
 
 ---
 
