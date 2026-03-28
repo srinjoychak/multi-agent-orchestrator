@@ -13,7 +13,7 @@
     "build": "docker compose -f docker/docker-compose.yml build worker-gemini worker-claude",
     "build:workers": "docker build -t worker-gemini -f docker/workers/Dockerfile.gemini . && docker build -t worker-claude -f docker/workers/Dockerfile.claude .",
     "validate": "bash docker/workers/validate-workers.sh",
-    "test": "node --test src/**/*.test.js tests/**/*.test.js",
+    "test": "node --test src/**/*.test.js tests/**/*.test.js test/**/*.test.js",
     "test:unit": "node --test src/**/*.test.js",
     "test:integration": "node --test tests/**/*.test.js",
     "kill-mcp": "pkill -f 'node src/mcp-server/index.js' || true",
