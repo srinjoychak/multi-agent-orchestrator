@@ -112,6 +112,41 @@ call `task_logs(id)` to understand why before the task retries.
 
 ---
 
+## Worktree Cleanup (mandatory after every job)
+
+After all tasks in a job are either accepted or rejected, clean up leftover
+worktrees and agent branches before closing the session:
+
+```bash
+# Remove all task worktrees
+git worktree list --porcelain \
+  | grep '^worktree ' | grep '\.worktrees' \
+  | awk '{print $2}' \
+  | xargs -r -n1 git worktree remove --force
+
+# Delete all agent/* branches
+git branch --list 'agent/*' \
+  | tr -d ' +*' \
+  | xargs -r -n1 git branch -D
+```
+
+Or use the npm shortcut (also resets SQLite state):
+```bash
+npm run reset-state
+```
+
+**When to run:**
+- After `task_accept` / `task_reject` has been called on every task in the job
+- Before raising a PR
+- Any time `git worktree list` shows entries under `.worktrees/`
+
+**Why this matters:**
+- Stale worktrees hold open file handles and inflate `git worktree list` output
+- Stale `agent/*` branches pollute the branch list and can cause name collisions on the next run
+- `task_reset()` clears the SQLite board but does NOT remove worktrees or branches — the shell commands above are still required
+
+---
+
 ## Constraints
 
 - Work only within: `/mnt/d/ALL_AUTOMATION/copilot_adapter`
