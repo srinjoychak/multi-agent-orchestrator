@@ -683,10 +683,14 @@ export class Orchestrator {
   }
 
   async _restoreWorkerGuidance(worktreePath, files) {
+    // Restore from the base branch, NOT from HEAD of the worktree.
+    // HEAD is the worker's commit which may have already committed the stub.
+    const base = await this.worktreeManager._getBaseBranch();
     for (const file of files) {
       const path = join(worktreePath, file);
       if (!existsSync(path)) continue;
-      await execFileAsync('git', ['checkout', '--', file], { cwd: worktreePath }).catch(() => {});
+      await execFileAsync('git', ['checkout', base, '--', file], { cwd: worktreePath })
+        .catch(() => execFileAsync('git', ['checkout', '--', file], { cwd: worktreePath }).catch(() => {}));
     }
   }
 
