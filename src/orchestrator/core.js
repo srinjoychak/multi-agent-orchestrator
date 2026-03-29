@@ -590,7 +590,7 @@ export class Orchestrator {
       duration_ms: 0,
     };
 
-    // 7. Merge-back
+    // 7. Merge-back — persist outcome to SQLite so task_status / audit reads are accurate
     const isResearch = ['research', 'analysis', 'docs'].includes(type);
     if (!isResearch && opts.mergeBack !== false && done.status === 'done') {
       try {
@@ -600,6 +600,9 @@ export class Orchestrator {
         resultData.merged = false;
         resultData.merge_error = mergeErr.message;
       }
+      // Write merged/merge_error back to SQLite — _runTask() wrote result_data before
+      // merge-back ran, so this field would otherwise be missing from task_status reads.
+      await this.taskManager.updateStatus(childTask.id, done.status, { result_data: resultData });
     }
 
     // 8. Return resultData
@@ -767,6 +770,13 @@ export class Orchestrator {
         'Do NOT use MCP tools. Do not follow Tech Lead protocols.',
         'Execute the task, commit, and exit.',
       ].join('\n'),
+      'CLAUDE.md': [
+        '# Worker Agent',
+        'You are a worker agent executing a specific coding task.',
+        'Your complete instructions are in the -p prompt.',
+        'Do NOT use MCP tools. Do not follow Tech Lead protocols.',
+        'Execute the task, commit, and exit.',
+      ].join('\n'),
       'AGENTS.md': [
         '# Worker Agent',
         'You are a worker agent executing a single task.',
@@ -777,6 +787,7 @@ export class Orchestrator {
     };
 
     const filesToStub = agentName === 'gemini' ? ['GEMINI.md']
+      : agentName === 'claude-code' ? ['CLAUDE.md']
       : agentName === 'codex' ? ['AGENTS.md']
       : [];
 
