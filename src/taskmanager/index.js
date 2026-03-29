@@ -24,6 +24,8 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = join(__dirname, 'schema.sql');
 
+export const MAX_DELEGATE_DEPTH = 3;
+
 /**
  * Versioned idempotent schema migrations.
  * Each key is a version number. Migrations are applied sequentially from
@@ -227,6 +229,63 @@ export class TaskManager {
       }
     })(tasks);
     return this.getTasks();
+  }
+
+  /**
+   * Create a delegated task.
+   * @param {string} parentTaskId
+   * @param {Object} opts
+   * @returns {Object}
+   */
+  async createDelegatedTask(parentTaskId, opts) {
+    const parent = await this.getTask(parentTaskId);
+    if (!parent) throw new Error(`Parent task ${parentTaskId} not found`);
+
+    const depth = (parent.delegate_depth ?? 0) + 1;
+    if (depth > MAX_DELEGATE_DEPTH) {
+      throw new Error(`Maximum delegation depth (${MAX_DELEGATE_DEPTH}) exceeded`);
+    }
+
+    const taskData = {
+      ...opts,
+      job_id: parent.job_id,
+      parent_task_id: parentTaskId,
+      delegate_depth: depth,
+      is_delegated: true,
+    };
+
+    return this.addTask(taskData);
+  }
+
+  /**
+   * Get all tasks delegated by a parent task.
+   * @param {string} parentTaskId
+   * @returns {Object[]}
+   */
+  async getDelegatedTasks(parentTaskId) {
+    return this.db.prepare('SELECT * FROM tasks WHERE parent_task_id = ? ORDER BY created_at')
+      .all(parentTaskId)
+      .map(r => this._deserialise(r));
+  }
+
+  /**
+   * Get the entire task tree starting from a root task using a recursive CTE.
+   * @param {string} rootTaskId
+   * @returns {Object[]}
+   */
+  async getTaskTree(rootTaskId) {
+    const rows = this.db.prepare(`
+      WITH RECURSIVE task_tree(id) AS (
+        SELECT id FROM tasks WHERE id = ?
+        UNION ALL
+        SELECT t.id FROM tasks t
+        JOIN task_tree tt ON t.parent_task_id = tt.id
+      )
+      SELECT t.* FROM tasks t
+      JOIN task_tree tt ON t.id = tt.id
+      ORDER BY t.delegate_depth, t.created_at
+    `).all(rootTaskId);
+    return rows.map(r => this._deserialise(r));
   }
 
   /**
