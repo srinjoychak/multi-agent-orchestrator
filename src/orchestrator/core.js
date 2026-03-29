@@ -600,9 +600,11 @@ export class Orchestrator {
         resultData.merged = false;
         resultData.merge_error = mergeErr.message;
       }
-      // Write merged/merge_error back to SQLite — _runTask() wrote result_data before
-      // merge-back ran, so this field would otherwise be missing from task_status reads.
-      await this.taskManager.updateStatus(childTask.id, done.status, { result_data: resultData });
+      // Persist merged/merge_error back to SQLite without going through the state machine.
+      // updateStatus() would throw "done → done" — this is a data-only patch on a
+      // completed task, not a transition, so write result_data directly.
+      this.taskManager.db.prepare('UPDATE tasks SET result_data = ? WHERE id = ?')
+        .run(JSON.stringify(resultData), childTask.id);
     }
 
     // 8. Return resultData
