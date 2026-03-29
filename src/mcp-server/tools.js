@@ -206,11 +206,14 @@ export async function handleTool(toolName, args, orchestrator, docker) {
       const diff = await orchestrator.getTaskDiff(args.id);
       const task = await orchestrator.taskManager.getTask(args.id);
       const files = await orchestrator.worktreeManager.changedFiles(args.id, task.assigned_to ?? 'unknown');
+      const resultMeta = task.result_data ?? {};
+      const provider = task.provider ?? resultMeta.provider ?? task.assigned_to ?? null;
+      const model = task.model ?? resultMeta.model ?? null;
 
       const header = [
         task.subagent_name  ? `subagent:  ${task.subagent_name}`  : null,
-        task.provider       ? `provider:  ${task.provider}`       : null,
-        task.model          ? `model:     ${task.model}`           : null,
+        provider            ? `provider:  ${provider}`            : null,
+        model               ? `model:     ${model}`               : null,
         task.delegate_depth != null ? `depth:     ${task.delegate_depth}` : null,
         task.parent_task_id ? `parent:    ${task.parent_task_id}` : null,
         task.routing_reason ? `routed:    ${task.routing_reason}` : null,

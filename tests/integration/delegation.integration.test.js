@@ -11,7 +11,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { TaskManager } from '../../src/taskmanager/index.js';
 import { Orchestrator } from '../../src/orchestrator/core.js';
-import { TOOLS } from '../../src/mcp-server/tools.js';
+import { TOOLS, handleTool } from '../../src/mcp-server/tools.js';
 import { makeMockDockerRunner, makeMockWorktreeManager, makeMockWorktreeManagerWithConflict } from './delegation-mocks.js';
 
 async function createTempDir() {
@@ -193,6 +193,30 @@ test('MCP Tool Schema Validation', async (t) => {
     const tool = getTool('task_status');
     assert.ok(tool.inputSchema.properties.subagent_name, 'subagent_name property exists');
     assert.strictEqual(tool.inputSchema.properties.subagent_name.type, 'string');
+  });
+
+  await t.test('task_diff header includes delegation metadata when provider/model are persisted in result_data', async () => {
+    const stateDir = await createTempDir();
+    try {
+      const orch = new Orchestrator('/tmp/mock-project', { stateDir });
+      orch.docker = makeMockDockerRunner();
+      orch.worktreeManager = makeMockWorktreeManager();
+      await orch.initialize({ quiet: true });
+      orch._getChangedFiles = async () => ['mock-file.js'];
+
+      const result = await orch.delegate('gemini', 'Implement feature', 'code');
+      const tasks = await orch.taskManager.getTasks();
+      const child = tasks.find(t => t.is_delegated);
+      assert.ok(child, 'delegated child task exists');
+
+      const diffResult = await handleTool('task_diff', { id: child.id }, orch, orch.docker);
+      assert.ok(diffResult.diff.includes('subagent:'));
+      assert.ok(diffResult.diff.includes('provider:'));
+      assert.ok(diffResult.diff.includes('depth:'));
+      assert.strictEqual(result.merged, true);
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
   });
 });
 
