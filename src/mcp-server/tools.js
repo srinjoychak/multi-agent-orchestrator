@@ -130,15 +130,14 @@ export async function handleTool(toolName, args, orchestrator, docker) {
   switch (toolName) {
 
     case 'orchestrate': {
-      const tasks = await orchestrator.decomposeTasks(args.prompt);
-      console.error(`[mcp] orchestrate: ${tasks.length} tasks decomposed`);
-      await orchestrator.assignTasks(tasks);
-      await orchestrator.executeTasks();
-      const summary = await orchestrator.taskManager.getSummary();
-      const allTasks = await orchestrator.taskManager.getTasks();
+      const result = await orchestrator.orchestrate(args.prompt);
       return {
-        summary,
-        tasks: allTasks.map(t => ({
+        summary: result.tasks.reduce((s, t) => {
+          s[t.status] = (s[t.status] || 0) + 1;
+          s.total = (s.total || 0) + 1;
+          return s;
+        }, {}),
+        tasks: result.tasks.map(t => ({
           id: t.id,
           title: t.title,
           type: t.type,
