@@ -11,6 +11,9 @@ import { promisify } from 'node:util';
 import { join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { rm, readFile, writeFile } from 'node:fs/promises';
+import { Logger } from '../logger/index.js';
+
+const log = new Logger('worktree');
 
 /** Returns true if dirPath is the same as or an ancestor of process.cwd(). */
 function isCwdDescendant(dirPath) {
@@ -220,7 +223,7 @@ export class WorktreeManager {
       // If git worktree remove fails, clean up the directory manually
       if (existsSync(path)) {
         if (isCwdDescendant(path)) {
-          console.error(`[worktree] Skipping rm of ${path} — shell CWD is inside it`);
+          log.error(`[worktree] Skipping rm of ${path} — shell CWD is inside it`);
         } else {
           await rm(path, { recursive: true, force: true });
         }
@@ -255,7 +258,7 @@ export class WorktreeManager {
       } catch {
         if (existsSync(path)) {
           if (isCwdDescendant(path)) {
-            console.error(`[worktree] Skipping rm of ${path} — shell CWD is inside it`);
+            log.error(`[worktree] Skipping rm of ${path} — shell CWD is inside it`);
           } else {
             await rm(path, { recursive: true, force: true });
           }
