@@ -26,5 +26,13 @@ CREATE TABLE IF NOT EXISTS tasks (
   token_usage     TEXT DEFAULT '{}',
   forced_agent    TEXT,
   retry_after     TEXT,
-  created_at      TEXT DEFAULT (datetime('now'))
+  created_at      TEXT DEFAULT (datetime('now')),
+  subagent_name   TEXT,
+  provider        TEXT,
+  model           TEXT,
+  parent_task_id  TEXT,
+  delegate_depth  INTEGER DEFAULT 0,
+  is_delegated    INTEGER DEFAULT 0,
+  routing_reason  TEXT,
+  result_data     TEXT
 );

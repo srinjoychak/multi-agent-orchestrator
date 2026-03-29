@@ -24,6 +24,33 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = join(__dirname, 'schema.sql');
 
+/**
+ * Versioned idempotent schema migrations.
+ * Each key is a version number. Migrations are applied sequentially from
+ * (current user_version + 1) up to CURRENT_SCHEMA_VERSION.
+ * Never edit an existing migration — add a new numbered entry.
+ */
+const MIGRATIONS = {
+  1: (db) => {
+    const existing = new Set(db.pragma('table_info(tasks)').map(c => c.name));
+    const cols = [
+      ['subagent_name',  'TEXT'],
+      ['provider',       'TEXT'],
+      ['model',          'TEXT'],
+      ['parent_task_id', 'TEXT'],
+      ['delegate_depth', 'INTEGER DEFAULT 0'],
+      ['is_delegated',   'INTEGER DEFAULT 0'],
+      ['routing_reason', 'TEXT'],
+      ['result_data',    'TEXT'],
+    ];
+    for (const [col, type] of cols) {
+      if (!existing.has(col)) db.exec(`ALTER TABLE tasks ADD COLUMN ${col} ${type}`);
+    }
+  },
+};
+
+const CURRENT_SCHEMA_VERSION = Math.max(...Object.keys(MIGRATIONS).map(Number));
+
 const VALID_TYPES = new Set(['code', 'refactor', 'test', 'review', 'debug', 'research', 'docs', 'analysis']);
 const VALID_STATUSES = new Set(['pending', 'claimed', 'in_progress', 'done', 'failed']);
 
@@ -63,6 +90,31 @@ export class TaskManager {
       this.db.pragma('journal_mode = DELETE');
       this.db.pragma('foreign_keys = ON');
       this.db.exec(readFileSync(SCHEMA_PATH, 'utf-8'));
+
+      // Apply any pending versioned migrations.
+      const dbVersion = this.db.pragma('user_version', { simple: true });
+      for (let v = dbVersion + 1; v <= CURRENT_SCHEMA_VERSION; v++) {
+        if (MIGRATIONS[v]) {
+          console.error(`[taskmanager] Applying migration v${v}`);
+          MIGRATIONS[v](this.db);
+          this.db.pragma(`user_version = ${v}`);
+        }
+      }
+
+      // Orphan recovery: delegated tasks that were in_progress when the
+      // orchestrator last crashed are permanently failed on next startup.
+      // Scoped to is_delegated=1 to avoid interfering with resetStaleClaims().
+      const orphaned = this.db.prepare(
+        `SELECT id FROM tasks WHERE is_delegated = 1 AND status = 'in_progress'`
+      ).all();
+      for (const { id } of orphaned) {
+        this.db.prepare(
+          `UPDATE tasks SET status='failed', completed_at=datetime('now'),
+           routing_reason='orchestrator_restart'
+           WHERE id=? AND is_delegated=1 AND status='in_progress'`
+        ).run(id);
+        console.error(`[taskmanager] Orphan recovery: task ${id} marked failed (orchestrator_restart)`);
+      }
     } catch (err) {
       console.error(`[taskmanager] FAILED to initialize database: ${err.message}`);
       throw err;
@@ -114,8 +166,10 @@ export class TaskManager {
   async addTask(taskData) {
     const task = this._normalise(taskData);
     this.db.prepare(`
-      INSERT INTO tasks (id, job_id, title, description, type, status, depends_on, max_retries, forced_agent)
-      VALUES (@id, @job_id, @title, @description, @type, 'pending', @depends_on, @max_retries, @forced_agent)
+      INSERT INTO tasks (id, job_id, title, description, type, status, depends_on, max_retries, forced_agent,
+        subagent_name, provider, model, parent_task_id, delegate_depth, is_delegated, routing_reason, result_data)
+      VALUES (@id, @job_id, @title, @description, @type, 'pending', @depends_on, @max_retries, @forced_agent,
+        @subagent_name, @provider, @model, @parent_task_id, @delegate_depth, @is_delegated, @routing_reason, @result_data)
     `).run({
       id: task.id,
       job_id: task.job_id ?? null,
@@ -125,6 +179,14 @@ export class TaskManager {
       depends_on: JSON.stringify(task.depends_on ?? []),
       max_retries: task.max_retries ?? 1,
       forced_agent: task.forced_agent ?? null,
+      subagent_name: task.subagent_name ?? null,
+      provider: task.provider ?? null,
+      model: task.model ?? null,
+      parent_task_id: task.parent_task_id ?? null,
+      delegate_depth: task.delegate_depth ?? 0,
+      is_delegated: task.is_delegated ? 1 : 0,
+      routing_reason: task.routing_reason ?? null,
+      result_data: task.result_data ? JSON.stringify(task.result_data) : null,
     });
     return this.getTask(task.id);
   }
@@ -136,8 +198,10 @@ export class TaskManager {
    */
   async addTasks(tasks) {
     const stmt = this.db.prepare(`
-      INSERT OR IGNORE INTO tasks (id, job_id, title, description, type, status, depends_on, max_retries, forced_agent)
-      VALUES (@id, @job_id, @title, @description, @type, 'pending', @depends_on, @max_retries, @forced_agent)
+      INSERT OR IGNORE INTO tasks (id, job_id, title, description, type, status, depends_on, max_retries, forced_agent,
+        subagent_name, provider, model, parent_task_id, delegate_depth, is_delegated, routing_reason, result_data)
+      VALUES (@id, @job_id, @title, @description, @type, 'pending', @depends_on, @max_retries, @forced_agent,
+        @subagent_name, @provider, @model, @parent_task_id, @delegate_depth, @is_delegated, @routing_reason, @result_data)
     `);
     this.db.transaction((rows) => {
       for (const row of rows) {
@@ -151,6 +215,14 @@ export class TaskManager {
           depends_on: JSON.stringify(t.depends_on ?? []),
           max_retries: t.max_retries ?? 1,
           forced_agent: t.forced_agent ?? null,
+          subagent_name: t.subagent_name ?? null,
+          provider: t.provider ?? null,
+          model: t.model ?? null,
+          parent_task_id: t.parent_task_id ?? null,
+          delegate_depth: t.delegate_depth ?? 0,
+          is_delegated: t.is_delegated ? 1 : 0,
+          routing_reason: t.routing_reason ?? null,
+          result_data: t.result_data ? JSON.stringify(t.result_data) : null,
         });
       }
     })(tasks);
@@ -259,12 +331,22 @@ export class TaskManager {
         setClauses.push("completed_at = datetime('now')");
       }
       for (const [key, val] of Object.entries(fields)) {
-        if (['worktree_branch','container_id','result_ref','assigned_to'].includes(key)) {
+        if (['worktree_branch','container_id','result_ref','assigned_to',
+             'subagent_name','provider','model','parent_task_id','routing_reason'].includes(key)) {
           setClauses.push(`${key} = @${key}`);
           params[key] = val;
+        } else if (key === 'delegate_depth') {
+          setClauses.push('delegate_depth = @delegate_depth');
+          params.delegate_depth = val;
+        } else if (key === 'is_delegated') {
+          setClauses.push('is_delegated = @is_delegated');
+          params.is_delegated = val ? 1 : 0;
         } else if (key === 'token_usage') {
           setClauses.push('token_usage = @token_usage');
           params.token_usage = JSON.stringify(val);
+        } else if (key === 'result_data') {
+          setClauses.push('result_data = @result_data');
+          params.result_data = val ? JSON.stringify(val) : null;
         }
       }
       this.db.prepare(`UPDATE tasks SET ${setClauses.join(', ')} WHERE id = @id`).run(params);
@@ -418,6 +500,14 @@ export class TaskManager {
       type: VALID_TYPES.has(data.type) ? data.type : 'code',
       depends_on: Array.isArray(data.depends_on) ? data.depends_on : [],
       max_retries: data.max_retries ?? 1,
+      subagent_name: data.subagent_name ?? null,
+      provider: data.provider ?? null,
+      model: data.model ?? null,
+      parent_task_id: data.parent_task_id ?? null,
+      delegate_depth: data.delegate_depth ?? 0,
+      is_delegated: data.is_delegated ?? false,
+      routing_reason: data.routing_reason ?? null,
+      result_data: data.result_data ?? null,
     };
   }
 
@@ -427,6 +517,8 @@ export class TaskManager {
       depends_on: this._json(row.depends_on, []),
       previous_agents: this._json(row.previous_agents, []),
       token_usage: this._json(row.token_usage, {}),
+      result_data: this._json(row.result_data, null),
+      is_delegated: row.is_delegated === 1,
     };
   }
 
