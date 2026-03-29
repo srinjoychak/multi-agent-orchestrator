@@ -3,6 +3,19 @@
  */
 
 /**
+ * @typedef {Object} TaskResultData
+ * @property {string} summary - Human-readable summary of what was done
+ * @property {string} provider - Provider that executed the task (e.g. "gemini", "claude", "codex")
+ * @property {string} [model] - Exact model used (e.g. "gemini-2.5-pro")
+ * @property {string[]} files_changed - List of files modified
+ * @property {string} [commit_hash] - Git commit hash of the result
+ * @property {{input: number, output: number}} [token_usage]
+ * @property {number} duration_ms
+ * @property {string} [logs_path] - Path to the container log file
+ * @property {boolean} [conflicts] - True if merge-back had conflicts (child branch preserved)
+ */
+
+/**
  * @typedef {Object} Task
  * @property {string} id - Unique task ID (e.g., "T1")
  * @property {string} title - Short task title
@@ -13,10 +26,18 @@
  * @property {string|null} claimed_at - ISO timestamp
  * @property {string|null} completed_at - ISO timestamp
  * @property {string[]} depends_on - Task IDs this task is blocked by
- * @property {string|null} result_ref - Path to result file
+ * @property {string|null} result_ref - Path to container log file (opaque reference, do not overload with JSON)
+ * @property {TaskResultData|null} result_data - Structured result envelope
  * @property {string|null} worktree_branch - Git branch for this task
  * @property {number} retries
  * @property {number} max_retries
+ * @property {string|null} subagent_name - Logical subagent role (e.g. "researcher", "implementer")
+ * @property {string|null} provider - Execution backend (e.g. "gemini", "claude", "codex")
+ * @property {string|null} model - Exact model used
+ * @property {string|null} parent_task_id - ID of the parent task that spawned this one
+ * @property {number} delegate_depth - Delegation nesting depth (0 = top-level)
+ * @property {boolean} is_delegated - True if spawned mid-execution via delegate()
+ * @property {string|null} routing_reason - Why this provider was chosen (or 'orchestrator_restart' for orphans)
  */
 
 /**
@@ -90,10 +111,18 @@ export function createTask(overrides = {}) {
     completed_at: null,
     depends_on: overrides.depends_on || [],
     result_ref: null,
+    result_data: null,
     worktree_branch: null,
     retries: overrides.retry_count ?? 0,  // accept legacy 'retry_count' field from manual seeds
     max_retries: overrides.max_retries ?? 1,
     previous_agents: overrides.previous_agents || [],
+    subagent_name: overrides.subagent_name ?? null,
+    provider: overrides.provider ?? null,
+    model: overrides.model ?? null,
+    parent_task_id: overrides.parent_task_id ?? null,
+    delegate_depth: overrides.delegate_depth ?? 0,
+    is_delegated: overrides.is_delegated ?? false,
+    routing_reason: overrides.routing_reason ?? null,
     ...overrides,
   };
 }
