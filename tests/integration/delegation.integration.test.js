@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { TaskManager } from '../../src/taskmanager/index.js';
 import { Orchestrator } from '../../src/orchestrator/core.js';
 import { TOOLS } from '../../src/mcp-server/tools.js';
-import { makeMockDockerRunner, makeMockWorktreeManager } from './delegation-mocks.js';
+import { makeMockDockerRunner, makeMockWorktreeManager, makeMockWorktreeManagerWithConflict } from './delegation-mocks.js';
 
 async function createTempDir() {
   return await mkdtemp(join(tmpdir(), 'delegation-test-'));
@@ -187,5 +187,132 @@ test('MCP Tool Schema Validation', async (t) => {
   await t.test('list_subagents tool description', async () => {
     const tool = getTool('list_subagents');
     assert.ok(tool.description.includes('capabilities'));
+  });
+
+  await t.test('task_status tool schema has subagent_name filter', async () => {
+    const tool = getTool('task_status');
+    assert.ok(tool.inputSchema.properties.subagent_name, 'subagent_name property exists');
+    assert.strictEqual(tool.inputSchema.properties.subagent_name.type, 'string');
+  });
+});
+
+test('Phase 6 — Merge and Context Sync', async (t) => {
+  // Test 1 — clean merge sets merged=true, conflicts=false
+  await t.test('delegate() clean merge: resultData.merged=true, conflicts=false', async () => {
+    const stateDir = await createTempDir();
+    try {
+      const orch = new Orchestrator('/tmp/mock-project', { stateDir });
+      orch.docker = makeMockDockerRunner();
+      orch.worktreeManager = makeMockWorktreeManager();
+      await orch.initialize({ quiet: true });
+      // Stub git file-change detection so code-type tasks reach the merge block
+      orch._getChangedFiles = async () => ['mock-file.js'];
+
+      const result = await orch.delegate('gemini', 'Implement feature', 'code');
+      assert.strictEqual(result.merged, true);
+      assert.strictEqual(result.conflicts, false);
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  // Test 2 — conflict: merged=false, conflicts=true, conflicting_files populated
+  await t.test('delegate() conflict: resultData.merged=false, conflicts=true, conflicting_files populated', async () => {
+    const stateDir = await createTempDir();
+    try {
+      const orch = new Orchestrator('/tmp/mock-project', { stateDir });
+      orch.docker = makeMockDockerRunner();
+      orch.worktreeManager = makeMockWorktreeManagerWithConflict();
+      await orch.initialize({ quiet: true });
+      orch._getChangedFiles = async () => ['mock-file.js'];
+
+      const result = await orch.delegate('gemini', 'Implement feature', 'code');
+      assert.strictEqual(result.merged, false);
+      assert.strictEqual(result.conflicts, true);
+      assert.ok(Array.isArray(result.conflicting_files));
+      assert.ok(result.conflicting_files.includes('src/auth/session.js'));
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  // Test 3 — conflict: prune is NOT called (child worktree preserved)
+  await t.test('delegate() conflict: worktree prune is not called', async () => {
+    const stateDir = await createTempDir();
+    try {
+      const orch = new Orchestrator('/tmp/mock-project', { stateDir });
+      orch.docker = makeMockDockerRunner();
+      const conflictMgr = makeMockWorktreeManagerWithConflict();
+      let pruned = false;
+      conflictMgr.prune = async () => { pruned = true; };
+      orch.worktreeManager = conflictMgr;
+      await orch.initialize({ quiet: true });
+      orch._getChangedFiles = async () => ['mock-file.js'];
+
+      await orch.delegate('gemini', 'Implement feature', 'code');
+      assert.strictEqual(pruned, false);
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  // Test 4 — research task skips merge entirely
+  await t.test('delegate() research type: no merge, no conflicts fields', async () => {
+    const stateDir = await createTempDir();
+    try {
+      const orch = new Orchestrator('/tmp/mock-project', { stateDir });
+      orch.docker = makeMockDockerRunner();
+      orch.worktreeManager = makeMockWorktreeManager();
+      await orch.initialize({ quiet: true });
+
+      const result = await orch.delegate('gemini', 'Research things', 'research');
+      assert.strictEqual(result.merged, undefined);
+      assert.strictEqual(result.conflicts, undefined);
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  // Test 5 — child task result_data persisted to SQLite (merged field durable)
+  await t.test('delegate() persists merged field to SQLite after clean merge', async () => {
+    const stateDir = await createTempDir();
+    try {
+      const orch = new Orchestrator('/tmp/mock-project', { stateDir });
+      orch.docker = makeMockDockerRunner();
+      orch.worktreeManager = makeMockWorktreeManager();
+      await orch.initialize({ quiet: true });
+      orch._getChangedFiles = async () => ['mock-file.js'];
+
+      await orch.delegate('gemini', 'Implement feature', 'code');
+
+      const tasks = await orch.taskManager.getTasks();
+      const child = tasks.find(t => t.is_delegated);
+      assert.ok(child, 'delegated child task exists in DB');
+      assert.strictEqual(child.result_data.merged, true);
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  // Test 6 — conflict result_data persisted to SQLite
+  await t.test('delegate() persists conflicts=true to SQLite after conflict', async () => {
+    const stateDir = await createTempDir();
+    try {
+      const orch = new Orchestrator('/tmp/mock-project', { stateDir });
+      orch.docker = makeMockDockerRunner();
+      orch.worktreeManager = makeMockWorktreeManagerWithConflict();
+      await orch.initialize({ quiet: true });
+      orch._getChangedFiles = async () => ['mock-file.js'];
+
+      await orch.delegate('gemini', 'Implement feature', 'code');
+
+      const tasks = await orch.taskManager.getTasks();
+      const child = tasks.find(t => t.is_delegated);
+      assert.ok(child, 'delegated child task exists in DB');
+      assert.strictEqual(child.result_data.conflicts, true);
+      assert.strictEqual(child.result_data.merged, false);
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
   });
 });

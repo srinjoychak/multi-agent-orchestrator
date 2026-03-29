@@ -47,3 +47,25 @@ export function makeMockWorktreeManager() {
     reset: async () => {}
   };
 }
+
+export function makeMockWorktreeManagerWithConflict() {
+  return {
+    projectRoot: '/tmp/mock-project',
+    worktreesDir: '/tmp/mock-project/.worktrees',
+    worktreePath: (taskId, agentName) => `/tmp/mock/${taskId}`,
+    branchName: (taskId, agentName) => `agent/${agentName}/${taskId}`,
+    create: async (taskId, agentName) => ({
+      path: `/tmp/mock/${taskId}`,
+      branch: `agent/${agentName}/${taskId}`,
+    }),
+    merge: async (taskId, agentName) => ({
+      success: false,
+      conflicts: true,
+      message: 'CONFLICT (content): Merge conflict in src/auth/session.js\nAutomatic merge failed',
+    }),
+    prune: async () => { throw new Error('prune should not be called on conflict'); },
+    diff: async () => 'mock diff',
+    changedFiles: async () => ['src/auth/session.js'],
+    reset: async () => {},
+  };
+}

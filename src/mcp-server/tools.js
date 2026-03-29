@@ -24,13 +24,17 @@ export const TOOLS = [
   },
   {
     name: 'task_status',
-    description: 'Get the status of all tasks or a specific task.',
+    description: 'Get the status of all tasks, a specific task by ID, or all tasks for a given subagent role.',
     inputSchema: {
       type: 'object',
       properties: {
         id: {
           type: 'string',
-          description: 'Task ID (e.g. "T1"). Omit for all tasks.',
+          description: 'Task ID (e.g. "T1"). Omit for all tasks or use subagent_name filter.',
+        },
+        subagent_name: {
+          type: 'string',
+          description: 'Filter by subagent role (e.g. "gemini", "researcher"). Returns all tasks assigned to this role.',
         },
       },
     },
@@ -189,6 +193,10 @@ export async function handleTool(toolName, args, orchestrator, docker) {
         const task = await orchestrator.taskManager.getTask(args.id);
         return { task };
       }
+      if (args.subagent_name) {
+        const tasks = await orchestrator.taskManager.getTasksBySubagent(args.subagent_name);
+        return { subagent_name: args.subagent_name, count: tasks.length, tasks };
+      }
       const tasks = await orchestrator.taskManager.getTasks();
       const summary = await orchestrator.taskManager.getSummary();
       return { summary, tasks };
@@ -198,7 +206,18 @@ export async function handleTool(toolName, args, orchestrator, docker) {
       const diff = await orchestrator.getTaskDiff(args.id);
       const task = await orchestrator.taskManager.getTask(args.id);
       const files = await orchestrator.worktreeManager.changedFiles(args.id, task.assigned_to ?? 'unknown');
-      return { task_id: args.id, files_changed: files, diff };
+
+      const header = [
+        task.subagent_name  ? `subagent:  ${task.subagent_name}`  : null,
+        task.provider       ? `provider:  ${task.provider}`       : null,
+        task.model          ? `model:     ${task.model}`           : null,
+        task.delegate_depth != null ? `depth:     ${task.delegate_depth}` : null,
+        task.parent_task_id ? `parent:    ${task.parent_task_id}` : null,
+        task.routing_reason ? `routed:    ${task.routing_reason}` : null,
+      ].filter(Boolean).join('\n');
+
+      const annotatedDiff = header ? `${header}\n\n${diff}` : diff;
+      return { task_id: args.id, files_changed: files, diff: annotatedDiff };
     }
 
     case 'task_accept': {
