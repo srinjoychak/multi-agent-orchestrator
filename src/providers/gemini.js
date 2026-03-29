@@ -1,8 +1,12 @@
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { mkdtemp, copyFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { ProviderAdapter } from './base.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const WORKER_SETTINGS_HOST = join(__dirname, '../../docker/workers/config/gemini-settings.json');
 
 export class GeminiAdapter extends ProviderAdapter {
   constructor() {
@@ -29,24 +33,32 @@ export class GeminiAdapter extends ProviderAdapter {
 
     // Isolated auth for Gemini
     const tempDir = await mkdtemp(join(tmpdir(), `gemini-auth-${taskId}-`));
-    const credFiles = ['oauth_creds.json', 'google_accounts.json', 'user_id', 'installation_id', 'state.json'];
-    for (const f of credFiles) {
-      const src = join(sourceDir, f);
-      if (existsSync(src)) {
-        await copyFile(src, join(tempDir, f));
-      }
-    }
-
-    // Try to mount gemini-settings if it exists
-    // (Actually this part might depend on where the orchestrator is running, 
-    // but in a real refactor, we'd pass this in or it'd be standardized)
     
-    return {
-      args: ['-v', `${tempDir}:${this.authMountTarget}:${mode}`],
-      cleanup: async () => {
-        await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    try {
+      const credFiles = ['oauth_creds.json', 'google_accounts.json', 'user_id', 'installation_id', 'state.json'];
+      for (const f of credFiles) {
+        const src = join(sourceDir, f);
+        if (existsSync(src)) {
+          await copyFile(src, join(tempDir, f));
+        }
       }
-    };
+
+      // Restore worker-safe settings.json overlay
+      if (existsSync(WORKER_SETTINGS_HOST)) {
+        await copyFile(WORKER_SETTINGS_HOST, join(tempDir, 'settings.json'));
+      }
+
+      return {
+        args: ['-v', `${tempDir}:${this.authMountTarget}:${mode}`],
+        cleanup: async () => {
+          await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+        }
+      };
+    } catch (err) {
+      // Clean up on failure to prevent resource leaks
+      await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      throw err;
+    }
   }
 
   parseOutput(stdout, stderr, durationMs) {
