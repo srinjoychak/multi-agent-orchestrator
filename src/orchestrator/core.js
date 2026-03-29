@@ -15,7 +15,7 @@
  */
 
 import { join, resolve } from 'node:path';
-import { mkdir, mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -54,6 +54,23 @@ const DEFAULT_AGENTS = {
     parseOutput: parseClaudeOutput,
     auth: { mountFrom: `${process.env.HOME}/.claude`, mountTo: '/home/node/.claude', mode: 'ro' },
   },
+  codex: {
+    image: 'worker-codex:latest',
+    capabilities: ['research', 'docs', 'analysis', 'code', 'test', 'refactor', 'debug', 'review'],
+    quota: 20,
+    timeoutMs: 300_000,
+    cliArgs: (prompt) => [
+      'exec',
+      '--json',
+      '--dangerously-bypass-approvals-and-sandbox',
+      '--skip-git-repo-check',
+      '--cd',
+      '/work',
+      prompt,
+    ],
+    parseOutput: parseCodexOutput,
+    auth: { mountFrom: `${process.env.HOME}/.codex`, mountTo: '/home/node/.codex', mode: 'rw' },
+  },
 };
 
 export class Orchestrator {
@@ -71,7 +88,7 @@ export class Orchestrator {
     this.pollIntervalMs = options.pollIntervalMs ?? 2000;
 
     this.taskManager = new TaskManager(this.stateDir);
-    this.docker = new DockerRunner();
+    this.docker = new DockerRunner({ stateDir: this.stateDir });
     this.worktreeManager = new WorktreeManager(this.projectRoot);
 
     /** @type {Map<string, Object>} agentName -> agent config */
@@ -105,7 +122,11 @@ export class Orchestrator {
     const agentsJson = await this._loadAgentsJson();
     for (const [name, defaults] of Object.entries(DEFAULT_AGENTS)) {
       const override = agentsJson[name] ?? {};
-      this.agents.set(name, { ...defaults, ...override, name });
+      const merged = { ...defaults, ...override, name };
+      if (override.timeout_seconds && !override.timeoutMs) {
+        merged.timeoutMs = override.timeout_seconds * 1000;
+      }
+      this.agents.set(name, merged);
     }
 
     // Build adapter-like objects for the router
@@ -131,6 +152,22 @@ export class Orchestrator {
     const jobId = randomUUID();
     this.taskManager.addJob(jobId, userPrompt);
     console.log(`[orchestrator] Job ${jobId} started`);
+
+    // Hot-reload agents.json (Gap 7)
+    const agentsJson = await this._loadAgentsJson();
+    for (const [name, defaults] of Object.entries(DEFAULT_AGENTS)) {
+      const override = agentsJson[name] ?? {};
+      const merged = { ...defaults, ...override, name };
+      if (override.timeout_seconds && !override.timeoutMs) {
+        merged.timeoutMs = override.timeout_seconds * 1000;
+      }
+      this.agents.set(name, merged);
+    }
+    // Rebuild router with updated config
+    const adapterMap = new Map(
+      Array.from(this.agents.entries()).map(([name, cfg]) => [name, { capabilities: cfg.capabilities }])
+    );
+    this.router = new AgentRouter(adapterMap, Object.fromEntries(this.agents));
 
     const tasks = await this.decomposeTasks(userPrompt, jobId);
     await this.executeTasks({ ...options, jobId });
@@ -162,6 +199,24 @@ export class Orchestrator {
       }]);
     }
 
+    // Gather project context (Gap 3)
+    let projectContext = '';
+    try {
+      const pkgPath = join(this.projectRoot, 'package.json');
+      const pkgRaw = await readFile(pkgPath, 'utf-8');
+      const pkg = JSON.parse(pkgRaw);
+      const { stdout: srcFiles } = await execFileAsync('find', ['src', '-name', '*.js', '-not', '-path', '*/node_modules/*'], { cwd: this.projectRoot });
+      projectContext = [
+        '',
+        'Project context (do not change these):',
+        `- Module system: ${pkg.type === 'module' ? 'ESM (import/export, .js extensions required)' : 'CommonJS (require)'}`,
+        `- Runtime: Node.js ${process.version}`,
+        `- Existing source files:\n${srcFiles.trim().split('\n').map(f => '  ' + f).join('\n')}`,
+        `- Test framework: node:test (built-in, no jest/mocha)`,
+        `- Dependencies: ${Object.keys(pkg.dependencies ?? {}).join(', ')}`,
+      ].join('\n');
+    } catch { /* non-fatal */ }
+
     const planPrompt = [
       'Decompose the following software engineering request into discrete, parallelizable tasks.',
       '',
@@ -171,6 +226,10 @@ export class Orchestrator {
       '3. Tasks must NOT touch the same files.',
       '4. Express dependencies via "depends_on": ["T1"].',
       '5. type must be one of: code, refactor, test, review, debug, research, docs, analysis',
+      '6. In each task description, list the exact files the task will create or modify.',
+      '7. No two tasks may list the same file — tasks that share files must use depends_on.',
+      '',
+      projectContext,
       '',
       'Schema: [{"id":"T1","title":"<60 chars","description":"detailed instructions","type":"code","depends_on":[]}]',
       '',
@@ -257,6 +316,9 @@ export class Orchestrator {
     while (true) {
       iteration++;
       const elapsed = Date.now() - startTime;
+
+      // Move retry-queue tasks back to pending if their backoff expires (Gap 8)
+      this.taskManager.retryDue();
 
       // Circuit breaker: max iterations
       if (iteration > maxIterations) {
@@ -386,6 +448,23 @@ export class Orchestrator {
   }
 
   /**
+   * Permanently discard a completed task without re-queuing.
+   * @param {string} taskId
+   * @returns {Promise<Object>}
+   */
+  async discardTask(taskId) {
+    const task = await this.taskManager.getTask(taskId);
+    if (task.assigned_to) {
+      await this.worktreeManager.prune(taskId, task.assigned_to).catch(() => {});
+    }
+    // Force to failed with retries exhausted so it cannot be re-queued
+    this.taskManager.db.prepare(
+      `UPDATE tasks SET status = 'failed', retries = max_retries WHERE id = ?`
+    ).run(taskId);
+    return { discarded: true };
+  }
+
+  /**
    * Re-queue a task with rejection reason.
    * @param {string} taskId
    * @param {string} reason
@@ -428,8 +507,40 @@ export class Orchestrator {
     const killed = await this.docker.kill(task.container_id);
     if (killed) {
       await this.taskManager.updateStatus(taskId, 'failed').catch(() => {});
+      if (task.assigned_to) {
+        await this.worktreeManager.prune(taskId, task.assigned_to).catch(() => {});
+      }
     }
     return { killed, container_id: task.container_id };
+  }
+
+  /**
+   * Get the live status of the entire workforce.
+   * Combines Docker container data with agent concurrency limits.
+   */
+  async getWorkforceStatus() {
+    const containers = await this.docker.listWorkers();
+    const agents = Array.from(this.agents.entries()).map(([name, cfg]) => {
+      const running = this._runningCounts.get(name) ?? 0;
+      const limit = cfg.concurrency ?? 1;
+      return {
+        agent: name,
+        status: running > 0 ? 'active' : 'idle',
+        utilization: `${running}/${limit}`,
+        load_percent: Math.round((running / limit) * 100),
+      };
+    });
+
+    return {
+      heartbeat: new Date().toISOString(),
+      agents,
+      containers: containers.map(c => ({
+        id: c.id,
+        name: c.name,
+        status: c.status,
+        uptime: c.created,
+      })),
+    };
   }
 
   /**
@@ -457,9 +568,12 @@ export class Orchestrator {
       return;
     }
 
+    let worktreePath = null;
     try {
       // Create worktree
-      const { path: worktreePath } = await this.worktreeManager.create(task.id, agentName);
+      ({ path: worktreePath } = await this.worktreeManager.create(task.id, agentName));
+
+      const stubbedFiles = await this._stubWorkerGuidance(agentName, worktreePath);
 
       // Build CLI prompt
       const prompt = this._buildPrompt(task, agentName, worktreePath);
@@ -473,13 +587,18 @@ export class Orchestrator {
         .run(containerName, task.id);
 
       // Run in Docker
-      const runResult = await this.docker.run({
-        taskId: task.id,
-        agentName,
-        worktreePath,
-        cliArgs,
-        options: { timeoutMs: agentCfg.timeoutMs, image: agentCfg.image },
-      });
+      let runResult;
+      try {
+        runResult = await this.docker.run({
+          taskId: task.id,
+          agentName,
+          worktreePath,
+          cliArgs,
+          options: { timeoutMs: agentCfg.timeoutMs, image: agentCfg.image, auth: agentCfg.auth },
+        });
+      } finally {
+        await this._restoreWorkerGuidance(worktreePath, stubbedFiles);
+      }
 
       // Parse output
       const parsed = agentCfg.parseOutput(runResult.stdout, runResult.stderr, runResult.duration_ms);
@@ -510,16 +629,66 @@ export class Orchestrator {
       return parsed;
 
     } catch (err) {
+      if (worktreePath) {
+        await this._restoreWorkerGuidance(worktreePath, ['GEMINI.md', 'AGENTS.md']);
+      }
       console.error(`  [error] ${task.id}: ${err.message}`);
       // updateStatus('failed') handles auto-retry internally if retries < max_retries
       await this.taskManager.updateStatus(task.id, 'failed').catch(() => {});
     }
   }
 
+  async _stubWorkerGuidance(agentName, worktreePath) {
+    const targets = [];
+
+    if (agentName === 'gemini') {
+      const geminiMdPath = join(worktreePath, 'GEMINI.md');
+      if (existsSync(geminiMdPath)) {
+        await writeFile(
+          geminiMdPath,
+          [
+            '# Worker Agent',
+            'You are a worker agent executing a specific coding task.',
+            'Your complete instructions are in the -p prompt.',
+            'Do NOT use MCP tools. Do not follow Tech Lead protocols.',
+            'Execute the task, commit, and exit.',
+          ].join('\n')
+        );
+        targets.push('GEMINI.md');
+      }
+    }
+
+    if (agentName === 'codex') {
+      const agentsMdPath = join(worktreePath, 'AGENTS.md');
+      if (existsSync(agentsMdPath)) {
+        await writeFile(
+          agentsMdPath,
+          [
+            '# Worker Agent',
+            'You are a worker agent executing a single task.',
+            'Follow the prompt exactly and do not orchestrate other agents.',
+            'Do not use MCP tools. Do not follow Tech Lead protocols.',
+            'Implement, commit, report, and exit.',
+          ].join('\n')
+        );
+        targets.push('AGENTS.md');
+      }
+    }
+
+    return targets;
+  }
+
+  async _restoreWorkerGuidance(worktreePath, files) {
+    for (const file of files) {
+      const path = join(worktreePath, file);
+      if (!existsSync(path)) continue;
+      await execFileAsync('git', ['checkout', '--', file], { cwd: worktreePath }).catch(() => {});
+    }
+  }
+
   /**
    * Build the CLI prompt for an agent.
-   * Gemini reads GEMINI.md natively — keep prompt minimal.
-   * Claude needs the full context in the prompt.
+   * All worker CLIs receive the same self-contained prompt contract.
    */
   _buildPrompt(task, agentName, worktreePath) {
     // Shared full-context block — both agents get the complete picture
@@ -571,7 +740,7 @@ export class Orchestrator {
   async _runPlanner(prompt, workDir) {
     // Try Gemini first (free tier — saves Claude quota)
     try {
-      return await this._runCLI('gemini', ['-p', prompt, '-y'], workDir, 60_000);
+      return await this._runCLI('gemini', ['-p', prompt, '--approval-mode', 'yolo'], workDir, 60_000);
     } catch {
       // Fall back to Claude
       return this._runCLI('claude', ['--print', '-p', prompt, '--output-format', 'json'], workDir, 60_000);
@@ -745,4 +914,89 @@ function parseGeminiOutput(stdout, stderr, duration_ms) {
     output: stdout,
     duration_ms,
   };
+}
+
+function parseCodexOutput(stdout, stderr, duration_ms) {
+  const trimmed = stdout.trim();
+  if (!trimmed) {
+    return { status: stderr?.trim() ? 'failed' : 'done', summary: stderr?.slice(0, 500) ?? '', filesChanged: [], output: stdout, duration_ms };
+  }
+
+  const events = [];
+  for (const line of trimmed.split('\n')) {
+    const value = line.trim();
+    if (!value) continue;
+    try {
+      events.push(JSON.parse(value));
+    } catch {
+      // Ignore non-JSON lines in mixed output streams.
+    }
+  }
+
+  if (events.length === 0) {
+    return {
+      status: 'done',
+      summary: trimmed.slice(0, 500),
+      filesChanged: [],
+      output: stdout,
+      duration_ms,
+    };
+  }
+
+  let status = 'done';
+  let summary = '';
+  let token_usage;
+
+  for (const event of events) {
+    const eventType = String(event.type ?? '').toLowerCase();
+    if (eventType.includes('error') || event.error) {
+      status = 'failed';
+    }
+
+    const text = extractTextFromJson(event);
+    if (text) summary = text;
+
+    if (!token_usage) {
+      const usage = event.usage ?? event.token_usage ?? event.metrics?.usage;
+      if (usage) {
+        token_usage = {
+          input: usage.input_tokens ?? usage.input ?? 0,
+          output: usage.output_tokens ?? usage.output ?? 0,
+          total: usage.total_tokens ?? usage.total ?? 0,
+        };
+      }
+    }
+  }
+
+  if (!summary) {
+    summary = stderr?.trim() ? stderr.slice(0, 500) : trimmed.slice(0, 500);
+  }
+
+  return { status, summary, filesChanged: [], output: stdout, duration_ms, token_usage };
+}
+
+function extractTextFromJson(value) {
+  if (typeof value === 'string') return value.trim();
+  if (!value || typeof value !== 'object') return '';
+
+  for (const key of ['summary', 'message', 'content', 'text', 'result']) {
+    if (key in value) {
+      const nested = extractTextFromJson(value[key]);
+      if (nested) return nested;
+    }
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const nested = extractTextFromJson(item);
+      if (nested) return nested;
+    }
+  }
+
+  if (value.delta && typeof value.delta === 'object') {
+    const nested = extractTextFromJson(value.delta);
+    if (nested) return nested;
+  }
+
+  return '';
 }

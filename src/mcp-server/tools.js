@@ -70,6 +70,17 @@ export const TOOLS = [
     },
   },
   {
+    name: 'task_discard',
+    description: 'Permanently discard a completed task without re-queuing. Use when output is manually handled or the task is no longer needed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Task ID' },
+      },
+      required: ['id'],
+    },
+  },
+  {
     name: 'task_logs',
     description: 'Get the last N lines of stdout/stderr from a running or recently completed worker container.',
     inputSchema: {
@@ -165,6 +176,11 @@ export async function handleTool(toolName, args, orchestrator, docker) {
       return { task_id: args.id, status: task.status, message: `Re-queued with reason: ${args.reason}` };
     }
 
+    case 'task_discard': {
+      const result = await orchestrator.discardTask(args.id);
+      return { task_id: args.id, ...result };
+    }
+
     case 'task_logs': {
       const logs = await orchestrator.getTaskLogs(args.id, args.tail ?? 100);
       return { task_id: args.id, ...logs };
@@ -176,9 +192,15 @@ export async function handleTool(toolName, args, orchestrator, docker) {
     }
 
     case 'workforce_status': {
-      const containers = await docker.listWorkers();
+      const status = await orchestrator.getWorkforceStatus();
       const summary = await orchestrator.taskManager.getSummary();
-      return { containers, summary };
+      // Keep legacy keys for backward compatibility while exposing richer status.
+      return {
+        containers: status.containers,
+        summary,
+        workforce: status,
+        task_summary: summary,
+      };
     }
 
     case 'task_reset': {

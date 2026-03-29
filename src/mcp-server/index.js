@@ -63,8 +63,8 @@ process.on('exit', cleanup);
 
 // ─── Initialize orchestrator ─────────────────────────────────────────────────
 
-const orchestrator = new Orchestrator(PROJECT_ROOT);
-const docker = new DockerRunner();
+const orchestrator = new Orchestrator(PROJECT_ROOT, { stateDir: STATE_DIR });
+const docker = new DockerRunner({ stateDir: STATE_DIR });
 
 // Initialize in background — tools will wait if called before init completes
 let initPromise = orchestrator.initialize({ quiet: true }).catch(err => {
