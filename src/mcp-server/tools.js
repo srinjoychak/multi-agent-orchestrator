@@ -192,9 +192,15 @@ export async function handleTool(toolName, args, orchestrator, docker) {
     }
 
     case 'workforce_status': {
-      const containers = await docker.listWorkers();
+      const status = await orchestrator.getWorkforceStatus();
       const summary = await orchestrator.taskManager.getSummary();
-      return { containers, summary };
+      // Keep legacy keys for backward compatibility while exposing richer status.
+      return {
+        containers: status.containers,
+        summary,
+        workforce: status,
+        task_summary: summary,
+      };
     }
 
     case 'task_reset': {
