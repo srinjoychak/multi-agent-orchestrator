@@ -12,3 +12,6 @@ TASK_CONTEXT.md
 GEMINI_TASK_*.md
 GEMINI_TECH_LEAD.md
 *-catalog.yaml
+
+# Task prompt specs — local only, not tracked in remote
+task-prompts/
