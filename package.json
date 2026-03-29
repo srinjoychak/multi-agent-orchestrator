@@ -10,8 +10,8 @@
   "scripts": {
     "start": "node src/mcp-server/index.js",
     "mcp": "node src/mcp-server/index.js",
-    "build": "docker compose -f docker/docker-compose.yml build worker-gemini worker-claude",
-    "build:workers": "docker build -t worker-gemini -f docker/workers/Dockerfile.gemini . && docker build -t worker-claude -f docker/workers/Dockerfile.claude .",
+    "build": "docker compose -f docker/docker-compose.yml build worker-gemini worker-claude worker-codex",
+    "build:workers": "docker build -t worker-gemini -f docker/workers/Dockerfile.gemini . && docker build -t worker-claude -f docker/workers/Dockerfile.claude . && docker build -t worker-codex -f docker/workers/Dockerfile.codex .",
     "validate": "bash docker/workers/validate-workers.sh",
     "test": "node --test src/**/*.test.js tests/**/*.test.js",
     "test:unit": "node --test src/**/*.test.js",
@@ -25,6 +25,7 @@
     "orchestrator",
     "claude-code",
     "gemini-cli",
+    "codex",
     "agent-teams"
   ],
   "license": "MIT",

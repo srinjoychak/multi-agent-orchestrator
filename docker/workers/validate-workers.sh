@@ -9,6 +9,9 @@ docker build -t worker-gemini -f docker/workers/Dockerfile.gemini .
 echo "Building Claude worker..."
 docker build -t worker-claude -f docker/workers/Dockerfile.claude .
 
+echo "Building Codex worker..."
+docker build -t worker-codex -f docker/workers/Dockerfile.codex .
+
 # Disable exit on error for testing
 set +e
 
@@ -24,4 +27,11 @@ if docker run --rm -v ~/.claude:/home/node/.claude worker-claude --version > /de
     echo "Claude: PASS"
 else
     echo "Claude: FAIL"
+fi
+
+echo "Testing Codex worker..."
+if docker run --rm -v ~/.codex:/home/node/.codex worker-codex --version > /dev/null 2>&1; then
+    echo "Codex: PASS"
+else
+    echo "Codex: FAIL"
 fi

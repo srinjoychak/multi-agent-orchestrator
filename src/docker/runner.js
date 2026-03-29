@@ -14,9 +14,9 @@
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { dirname, basename, join as pathJoin } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { mkdtemp, copyFile, mkdir, rm, readdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, createWriteStream } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const execFileAsync = promisify(execFile);
@@ -24,14 +24,16 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 
 /** Default auth directory paths on the host (WSL) */
 const AUTH_DIRS = {
-  gemini: `${process.env.HOME}/.gemini`,
-  'claude-code': `${process.env.HOME}/.claude`,
+  gemini: `${homedir()}/.gemini`,
+  'claude-code': `${homedir()}/.claude`,
+  codex: `${homedir()}/.codex`,
 };
 
 /** Auth mount target inside the container */
 const AUTH_MOUNTS = {
   gemini: '/home/node/.gemini',
   'claude-code': '/home/node/.claude',
+  codex: '/home/node/.codex',
 };
 
 /**
@@ -47,10 +49,13 @@ export class DockerRunner {
    * @param {Object} [options]
    * @param {string} [options.defaultMemory='2g']
    * @param {number} [options.defaultTimeoutMs=120000]
+   * @param {string} [options.stateDir]
    */
   constructor(options = {}) {
     this.defaultMemory = options.defaultMemory ?? '2g';
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? 120_000;
+    this.stateDir = options.stateDir ?? pathJoin(homedir(), '.local', 'share', 'multi-agent-orchestrator-v3');
+    this.logDir = pathJoin(this.stateDir, 'logs');
   }
 
   /**
@@ -82,16 +87,17 @@ export class DockerRunner {
   /**
    * Spawn a worker container to execute a task.
    *
-   * @param {Object} params
-   * @param {string} params.taskId
-   * @param {string} params.agentName       - 'gemini' | 'claude-code'
-   * @param {string} params.worktreePath    - host path to the git worktree
-   * @param {string[]} params.cliArgs       - args to pass to the CLI inside the container
-   * @param {string} [params.jobId]         - optional job UUID to prefix the container name
-   * @param {Object} [params.options]
-   * @param {number} [params.options.timeoutMs]
-   * @param {string} [params.options.memory]
-   * @param {string} [params.options.image]  - override image name
+ * @param {Object} params
+ * @param {string} params.taskId
+ * @param {string} params.agentName       - 'gemini' | 'claude-code' | 'codex'
+ * @param {string} params.worktreePath    - host path to the git worktree
+ * @param {string[]} params.cliArgs       - args to pass to the CLI inside the container
+ * @param {string} [params.jobId]         - optional job UUID to prefix the container name
+ * @param {Object} [params.options]
+ * @param {number} [params.options.timeoutMs]
+ * @param {string} [params.options.memory]
+ * @param {string} [params.options.image]  - override image name
+ * @param {Object} [params.options.auth]   - override auth mount config from agent settings
    *
    * @returns {Promise<{exitCode: number, stdout: string, stderr: string, duration_ms: number, containerId: string}>}
    */
@@ -103,14 +109,23 @@ export class DockerRunner {
     const containerName = `worker-${agentName}-${jobIdStr}${taskId}`;
     const timeoutSec = Math.ceil(timeoutMs / 1000);
 
-    const sourceAuthDir = AUTH_DIRS[agentName];
-    const authMount = AUTH_MOUNTS[agentName];
+    const authCfg = options.auth ?? {};
+    const sourceAuthDir = this._resolveAuthPath(authCfg.mountFrom ?? AUTH_DIRS[agentName]);
+    const authMount = authCfg.mountTo ?? AUTH_MOUNTS[agentName];
+    const authMode = authCfg.mode ?? (agentName === 'gemini' ? 'rw' : 'ro');
+
+    // Ensure log directory exists
+    if (!existsSync(this.logDir)) {
+      await mkdir(this.logDir, { recursive: true });
+    }
+    const logFilePath = pathJoin(this.logDir, `${taskId}.log`);
+    const logStream = createWriteStream(logFilePath, { flags: 'a' });
 
     // For Gemini: create a per-task isolated auth dir (credentials only, no session history).
     // This prevents cached sessions from previous tasks leaking into the new worker context.
     // For Claude: mount the host auth dir read-only as before.
     let tempAuthDir = null;
-    const effectiveAuthDir = agentName === 'gemini' && sourceAuthDir
+    const effectiveAuthDir = agentName === 'gemini' && sourceAuthDir && existsSync(sourceAuthDir)
       ? (tempAuthDir = await this._isolatedGeminiAuth(sourceAuthDir), tempAuthDir)
       : sourceAuthDir;
 
@@ -123,10 +138,8 @@ export class DockerRunner {
       '--stop-timeout', String(timeoutSec),
     ];
 
-    if (effectiveAuthDir && authMount) {
-      // Gemini: rw on isolated temp dir. Claude: ro on host dir.
-      const mode = agentName === 'gemini' ? 'rw' : 'ro';
-      dockerArgs.push('-v', `${effectiveAuthDir}:${authMount}:${mode}`);
+    if (effectiveAuthDir && authMount && existsSync(effectiveAuthDir)) {
+      dockerArgs.push('-v', `${effectiveAuthDir}:${authMount}:${authMode}`);
 
       // Claude still needs the settings.json override (no isolated dir for it)
       if (agentName !== 'gemini') {
@@ -156,18 +169,28 @@ export class DockerRunner {
     let settled = false;
     let timeoutHandle = null;
 
+    logStream.write(`\n--- [${new Date().toISOString()}] Starting container: ${containerName} ---\n`);
+    logStream.write(`Command: docker ${dockerArgs.join(' ')}\n\n`);
+
     return new Promise((resolve, reject) => {
       const cp = spawn('docker', dockerArgs, {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
 
-      cp.stdout.on('data', (chunk) => { stdout += chunk; });
-      cp.stderr.on('data', (chunk) => { stderr += chunk; });
+      cp.stdout.on('data', (chunk) => {
+        stdout += chunk;
+        logStream.write(chunk);
+      });
+      cp.stderr.on('data', (chunk) => {
+        stderr += chunk;
+        logStream.write(chunk);
+      });
 
       const settle = (err) => {
         if (settled) return;
         settled = true;
         if (timeoutHandle) clearTimeout(timeoutHandle);
+        logStream.end();
         if (err) reject(err);
       };
 
@@ -184,14 +207,18 @@ export class DockerRunner {
       }, timeoutMs);
 
       cp.on('exit', async (code) => {
-        settle(null);
         const duration_ms = Date.now() - startTime;
+        logStream.write(`\n--- [${new Date().toISOString()}] Container exited with code ${code} after ${duration_ms}ms ---\n`);
+        settle(null);
         // Clean up the per-task isolated auth dir (Gemini only)
         if (tempAuthDir) rm(tempAuthDir, { recursive: true, force: true }).catch(() => {});
         resolve({ exitCode: code ?? 1, stdout, stderr, duration_ms, containerId: containerName });
       });
 
-      cp.on('error', (err) => settle(err));
+      cp.on('error', (err) => {
+        logStream.write(`\n--- [${new Date().toISOString()}] Process error: ${err.message} ---\n`);
+        settle(err);
+      });
     });
   }
 
@@ -277,5 +304,12 @@ export class DockerRunner {
     } catch {
       return false;
     }
+  }
+
+  _resolveAuthPath(authPath) {
+    if (!authPath || typeof authPath !== 'string') return null;
+    if (authPath === '~') return homedir();
+    if (authPath.startsWith('~/')) return pathJoin(homedir(), authPath.slice(2));
+    return authPath;
   }
 }

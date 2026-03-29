@@ -16,5 +16,14 @@
     "timeoutMs": 300000,
     "tokenBudget": { "maxInputPerTask": 100000, "maxOutputPerTask": 32000 },
     "auth": { "mountFrom": "~/.gemini", "mountTo": "/home/node/.gemini", "mode": "rw" }
+  },
+  "codex": {
+    "image": "worker-codex:latest",
+    "concurrency": 2,
+    "capabilities": ["research", "docs", "analysis", "code", "test", "refactor", "debug", "review"],
+    "quota": 20,
+    "timeoutMs": 300000,
+    "tokenBudget": { "maxInputPerTask": 100000, "maxOutputPerTask": 32000 },
+    "auth": { "mountFrom": "~/.codex", "mountTo": "/home/node/.codex", "mode": "rw" }
   }
 }

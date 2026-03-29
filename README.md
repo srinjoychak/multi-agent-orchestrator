@@ -1,6 +1,6 @@
 # Multi-Agent Orchestrator
 
-**Vendor-neutral orchestrator that coordinates multiple AI coding CLIs (Claude Code, Gemini CLI) as a team — decomposing work, executing tasks in parallel git worktrees, and merging results.**
+**Vendor-neutral orchestrator that coordinates multiple AI coding CLIs (Claude Code, Gemini CLI, Codex CLI) as a team — decomposing work, executing tasks in parallel git worktrees, and merging results.**
 
 ---
 
@@ -51,6 +51,7 @@
 - At least one AI CLI agent:
   - **Claude Code**: `npm i -g @anthropic-ai/claude-code` and authenticate
   - **Gemini CLI**: `npm i -g @google/gemini-cli` and authenticate
+  - **Codex CLI**: `npm i -g @openai/codex` and authenticate
 
 See [docs/SETUP.md](docs/SETUP.md) for full installation instructions.
 
@@ -144,6 +145,11 @@ Capability routing is controlled by `agents.json` at the project root:
   "gemini": {
     "role": "developer",
     "capabilities": ["code", "refactor", "test", "debug", "docs", "research", "analysis"],
+    "weight": 1
+  },
+  "codex": {
+    "role": "developer",
+    "capabilities": ["code", "refactor", "test", "debug", "docs", "research", "analysis", "review"],
     "weight": 1
   }
 }

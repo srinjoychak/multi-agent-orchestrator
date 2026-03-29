@@ -6,7 +6,7 @@ version: '3.8'
 # node process (node src/mcp-server/index.js), not in a container.
 #
 # Usage:
-#   docker compose -f docker/docker-compose.yml build worker-gemini worker-claude
+#   docker compose -f docker/docker-compose.yml build worker-gemini worker-claude worker-codex
 
 services:
 
@@ -21,3 +21,9 @@ services:
       context: ..
       dockerfile: docker/workers/Dockerfile.claude
     image: worker-claude:latest
+
+  worker-codex:
+    build:
+      context: ..
+      dockerfile: docker/workers/Dockerfile.codex
+    image: worker-codex:latest

@@ -54,6 +54,23 @@ const DEFAULT_AGENTS = {
     parseOutput: parseClaudeOutput,
     auth: { mountFrom: `${process.env.HOME}/.claude`, mountTo: '/home/node/.claude', mode: 'ro' },
   },
+  codex: {
+    image: 'worker-codex:latest',
+    capabilities: ['research', 'docs', 'analysis', 'code', 'test', 'refactor', 'debug', 'review'],
+    quota: 20,
+    timeoutMs: 300_000,
+    cliArgs: (prompt) => [
+      'exec',
+      '--json',
+      '--dangerously-bypass-approvals-and-sandbox',
+      '--skip-git-repo-check',
+      '--cd',
+      '/work',
+      prompt,
+    ],
+    parseOutput: parseCodexOutput,
+    auth: { mountFrom: `${process.env.HOME}/.codex`, mountTo: '/home/node/.codex', mode: 'rw' },
+  },
 };
 
 export class Orchestrator {
@@ -71,7 +88,7 @@ export class Orchestrator {
     this.pollIntervalMs = options.pollIntervalMs ?? 2000;
 
     this.taskManager = new TaskManager(this.stateDir);
-    this.docker = new DockerRunner();
+    this.docker = new DockerRunner({ stateDir: this.stateDir });
     this.worktreeManager = new WorktreeManager(this.projectRoot);
 
     /** @type {Map<string, Object>} agentName -> agent config */
@@ -105,7 +122,11 @@ export class Orchestrator {
     const agentsJson = await this._loadAgentsJson();
     for (const [name, defaults] of Object.entries(DEFAULT_AGENTS)) {
       const override = agentsJson[name] ?? {};
-      this.agents.set(name, { ...defaults, ...override, name });
+      const merged = { ...defaults, ...override, name };
+      if (override.timeout_seconds && !override.timeoutMs) {
+        merged.timeoutMs = override.timeout_seconds * 1000;
+      }
+      this.agents.set(name, merged);
     }
 
     // Build adapter-like objects for the router
@@ -136,7 +157,11 @@ export class Orchestrator {
     const agentsJson = await this._loadAgentsJson();
     for (const [name, defaults] of Object.entries(DEFAULT_AGENTS)) {
       const override = agentsJson[name] ?? {};
-      this.agents.set(name, { ...defaults, ...override, name });
+      const merged = { ...defaults, ...override, name };
+      if (override.timeout_seconds && !override.timeoutMs) {
+        merged.timeoutMs = override.timeout_seconds * 1000;
+      }
+      this.agents.set(name, merged);
     }
     // Rebuild router with updated config
     const adapterMap = new Map(
@@ -490,6 +515,35 @@ export class Orchestrator {
   }
 
   /**
+   * Get the live status of the entire workforce.
+   * Combines Docker container data with agent concurrency limits.
+   */
+  async getWorkforceStatus() {
+    const containers = await this.docker.listWorkers();
+    const agents = Array.from(this.agents.entries()).map(([name, cfg]) => {
+      const running = this._runningCounts.get(name) ?? 0;
+      const limit = cfg.concurrency ?? 1;
+      return {
+        agent: name,
+        status: running > 0 ? 'active' : 'idle',
+        utilization: `${running}/${limit}`,
+        load_percent: Math.round((running / limit) * 100),
+      };
+    });
+
+    return {
+      heartbeat: new Date().toISOString(),
+      agents,
+      containers: containers.map(c => ({
+        id: c.id,
+        name: c.name,
+        status: c.status,
+        uptime: c.created,
+      })),
+    };
+  }
+
+  /**
    * Hard reset: remove all worktrees, clear task state.
    * NOTE: stateDir itself is never deleted — only its contents are cleared —
    * to avoid inode invalidation for shells whose CWD is inside it.
@@ -514,26 +568,12 @@ export class Orchestrator {
       return;
     }
 
+    let worktreePath = null;
     try {
       // Create worktree
-      const { path: worktreePath } = await this.worktreeManager.create(task.id, agentName);
+      ({ path: worktreePath } = await this.worktreeManager.create(task.id, agentName));
 
-      // Overwrite GEMINI.md in the worktree with a minimal worker-safe stub (Gap 1)
-      if (agentName === 'gemini') {
-        const geminiMdPath = join(worktreePath, 'GEMINI.md');
-        if (existsSync(geminiMdPath)) {
-          await writeFile(
-            geminiMdPath,
-            [
-              '# Worker Agent',
-              'You are a worker agent executing a specific coding task.',
-              'Your complete instructions are in the -p prompt.',
-              'Do NOT use MCP tools. Do not follow Tech Lead protocols.',
-              'Execute the task, commit, and exit.',
-            ].join('\n')
-          );
-        }
-      }
+      const stubbedFiles = await this._stubWorkerGuidance(agentName, worktreePath);
 
       // Build CLI prompt
       const prompt = this._buildPrompt(task, agentName, worktreePath);
@@ -547,21 +587,17 @@ export class Orchestrator {
         .run(containerName, task.id);
 
       // Run in Docker
-      const runResult = await this.docker.run({
-        taskId: task.id,
-        agentName,
-        worktreePath,
-        cliArgs,
-        options: { timeoutMs: agentCfg.timeoutMs, image: agentCfg.image },
-      });
-
-      // Reset GEMINI.md so it is not committed as a change (Gap 1)
-      if (agentName === 'gemini') {
-        const geminiMdPath = join(worktreePath, 'GEMINI.md');
-        if (existsSync(geminiMdPath)) {
-          await execFileAsync('git', ['checkout', '--', 'GEMINI.md'], { cwd: worktreePath })
-            .catch(() => {});
-        }
+      let runResult;
+      try {
+        runResult = await this.docker.run({
+          taskId: task.id,
+          agentName,
+          worktreePath,
+          cliArgs,
+          options: { timeoutMs: agentCfg.timeoutMs, image: agentCfg.image, auth: agentCfg.auth },
+        });
+      } finally {
+        await this._restoreWorkerGuidance(worktreePath, stubbedFiles);
       }
 
       // Parse output
@@ -593,16 +629,66 @@ export class Orchestrator {
       return parsed;
 
     } catch (err) {
+      if (worktreePath) {
+        await this._restoreWorkerGuidance(worktreePath, ['GEMINI.md', 'AGENTS.md']);
+      }
       console.error(`  [error] ${task.id}: ${err.message}`);
       // updateStatus('failed') handles auto-retry internally if retries < max_retries
       await this.taskManager.updateStatus(task.id, 'failed').catch(() => {});
     }
   }
 
+  async _stubWorkerGuidance(agentName, worktreePath) {
+    const targets = [];
+
+    if (agentName === 'gemini') {
+      const geminiMdPath = join(worktreePath, 'GEMINI.md');
+      if (existsSync(geminiMdPath)) {
+        await writeFile(
+          geminiMdPath,
+          [
+            '# Worker Agent',
+            'You are a worker agent executing a specific coding task.',
+            'Your complete instructions are in the -p prompt.',
+            'Do NOT use MCP tools. Do not follow Tech Lead protocols.',
+            'Execute the task, commit, and exit.',
+          ].join('\n')
+        );
+        targets.push('GEMINI.md');
+      }
+    }
+
+    if (agentName === 'codex') {
+      const agentsMdPath = join(worktreePath, 'AGENTS.md');
+      if (existsSync(agentsMdPath)) {
+        await writeFile(
+          agentsMdPath,
+          [
+            '# Worker Agent',
+            'You are a worker agent executing a single task.',
+            'Follow the prompt exactly and do not orchestrate other agents.',
+            'Do not use MCP tools. Do not follow Tech Lead protocols.',
+            'Implement, commit, report, and exit.',
+          ].join('\n')
+        );
+        targets.push('AGENTS.md');
+      }
+    }
+
+    return targets;
+  }
+
+  async _restoreWorkerGuidance(worktreePath, files) {
+    for (const file of files) {
+      const path = join(worktreePath, file);
+      if (!existsSync(path)) continue;
+      await execFileAsync('git', ['checkout', '--', file], { cwd: worktreePath }).catch(() => {});
+    }
+  }
+
   /**
    * Build the CLI prompt for an agent.
-   * Gemini reads GEMINI.md natively — keep prompt minimal.
-   * Claude needs the full context in the prompt.
+   * All worker CLIs receive the same self-contained prompt contract.
    */
   _buildPrompt(task, agentName, worktreePath) {
     // Shared full-context block — both agents get the complete picture
@@ -828,4 +914,89 @@ function parseGeminiOutput(stdout, stderr, duration_ms) {
     output: stdout,
     duration_ms,
   };
+}
+
+function parseCodexOutput(stdout, stderr, duration_ms) {
+  const trimmed = stdout.trim();
+  if (!trimmed) {
+    return { status: stderr?.trim() ? 'failed' : 'done', summary: stderr?.slice(0, 500) ?? '', filesChanged: [], output: stdout, duration_ms };
+  }
+
+  const events = [];
+  for (const line of trimmed.split('\n')) {
+    const value = line.trim();
+    if (!value) continue;
+    try {
+      events.push(JSON.parse(value));
+    } catch {
+      // Ignore non-JSON lines in mixed output streams.
+    }
+  }
+
+  if (events.length === 0) {
+    return {
+      status: 'done',
+      summary: trimmed.slice(0, 500),
+      filesChanged: [],
+      output: stdout,
+      duration_ms,
+    };
+  }
+
+  let status = 'done';
+  let summary = '';
+  let token_usage;
+
+  for (const event of events) {
+    const eventType = String(event.type ?? '').toLowerCase();
+    if (eventType.includes('error') || event.error) {
+      status = 'failed';
+    }
+
+    const text = extractTextFromJson(event);
+    if (text) summary = text;
+
+    if (!token_usage) {
+      const usage = event.usage ?? event.token_usage ?? event.metrics?.usage;
+      if (usage) {
+        token_usage = {
+          input: usage.input_tokens ?? usage.input ?? 0,
+          output: usage.output_tokens ?? usage.output ?? 0,
+          total: usage.total_tokens ?? usage.total ?? 0,
+        };
+      }
+    }
+  }
+
+  if (!summary) {
+    summary = stderr?.trim() ? stderr.slice(0, 500) : trimmed.slice(0, 500);
+  }
+
+  return { status, summary, filesChanged: [], output: stdout, duration_ms, token_usage };
+}
+
+function extractTextFromJson(value) {
+  if (typeof value === 'string') return value.trim();
+  if (!value || typeof value !== 'object') return '';
+
+  for (const key of ['summary', 'message', 'content', 'text', 'result']) {
+    if (key in value) {
+      const nested = extractTextFromJson(value[key]);
+      if (nested) return nested;
+    }
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const nested = extractTextFromJson(item);
+      if (nested) return nested;
+    }
+  }
+
+  if (value.delta && typeof value.delta === 'object') {
+    const nested = extractTextFromJson(value.delta);
+    if (nested) return nested;
+  }
+
+  return '';
 }
