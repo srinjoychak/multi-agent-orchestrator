@@ -61,28 +61,28 @@ export class AgentRouter {
   selectAgent(task, runningCounts = {}) {
     // 1. Prioritize forced_agent
     if (task.forced_agent && this.adapters.has(task.forced_agent)) {
+      task.routing_reason = `forced_agent:${task.forced_agent}`;
       return task.forced_agent;
     }
 
-    const agentNames = Array.from(this.adapters.keys());
     const prev = task.previous_agents ?? [];
+    const preferredProviders = Array.isArray(task.preferred_providers) ? task.preferred_providers : [];
 
     // 2. Filter by capability and concurrency limits (respecting previous_agents)
-    const capableFresh = agentNames.filter(name => {
-      const capable = !task.type || this._hasCapability(name, task.type);
-      const underLimit = (runningCounts[name] ?? 0) < (this.agentsConfig[name]?.concurrency ?? Infinity);
-      const fresh = !prev.includes(name);
-      return capable && underLimit && fresh;
-    });
-    if (capableFresh.length > 0) return this._pickByQuota(capableFresh);
+    const capableFresh = this._eligibleAgents(task, runningCounts, prev, true);
+    if (capableFresh.length > 0) {
+      const picked = this._pickByPreferenceThenQuota(capableFresh, preferredProviders);
+      task.routing_reason = this._buildRoutingReason(task, picked, 'fresh', preferredProviders);
+      return picked;
+    }
 
     // 3. Fallback: relax previous_agents constraint
-    const capableFallback = agentNames.filter(name => {
-      const capable = !task.type || this._hasCapability(name, task.type);
-      const underLimit = (runningCounts[name] ?? 0) < (this.agentsConfig[name]?.concurrency ?? Infinity);
-      return capable && underLimit;
-    });
-    if (capableFallback.length > 0) return this._pickByQuota(capableFallback);
+    const capableFallback = this._eligibleAgents(task, runningCounts, prev, false);
+    if (capableFallback.length > 0) {
+      const picked = this._pickByPreferenceThenQuota(capableFallback, preferredProviders);
+      task.routing_reason = this._buildRoutingReason(task, picked, 'fallback', preferredProviders);
+      return picked;
+    }
 
     return null;
   }
@@ -100,6 +100,86 @@ export class AgentRouter {
       if (ratio < bestRatio) { bestRatio = ratio; best = candidates[i]; }
     }
     return best;
+  }
+
+  /**
+   * Pick the best candidate using provider preference first, then quota.
+   * @param {string[]} candidates
+   * @param {string[]} preferredProviders
+   * @returns {string}
+   */
+  _pickByPreferenceThenQuota(candidates, preferredProviders = []) {
+    let best = candidates[0];
+    let bestScore = this._candidateScore(best, preferredProviders);
+    for (let i = 1; i < candidates.length; i++) {
+      const score = this._candidateScore(candidates[i], preferredProviders);
+      if (this._compareScore(score, bestScore) < 0) {
+        best = candidates[i];
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Score a candidate by preference index, quota ratio, and tie-breaker.
+   * Lower is better.
+   * @param {string} agentName
+   * @param {string[]} preferredProviders
+   * @returns {[number, number, number, string]}
+   */
+  _candidateScore(agentName, preferredProviders = []) {
+    const prefIndex = preferredProviders.length > 0
+      ? preferredProviders.indexOf(agentName)
+      : 0;
+    const normalizedPrefRank = prefIndex === -1 ? preferredProviders.length : prefIndex;
+    return [normalizedPrefRank, this._quotaRatio(agentName), this._assignedCounts.get(agentName) ?? 0, agentName];
+  }
+
+  /**
+   * Compare two candidate scores.
+   * @param {[number, number, number, string]} a
+   * @param {[number, number, number, string]} b
+   * @returns {-1|0|1}
+   */
+  _compareScore(a, b) {
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] < b[i]) return -1;
+      if (a[i] > b[i]) return 1;
+    }
+    return 0;
+  }
+
+  /**
+   * Eligible agents for the current task.
+   * @param {Object} task
+   * @param {Object} runningCounts
+   * @param {string[]} prev
+   * @param {boolean} freshOnly
+   * @returns {string[]}
+   */
+  _eligibleAgents(task, runningCounts, prev, freshOnly) {
+    return Array.from(this.adapters.keys()).filter(name => {
+      const capable = !task.type || this._hasCapability(name, task.type);
+      const underLimit = (runningCounts[name] ?? 0) < (this.agentsConfig[name]?.concurrency ?? Infinity);
+      const fresh = !prev.includes(name);
+      return capable && underLimit && (freshOnly ? fresh : true);
+    });
+  }
+
+  /**
+   * Build a human-readable routing reason.
+   * @param {Object} task
+   * @param {string} agentName
+   * @param {string} stage
+   * @param {string[]} preferredProviders
+   * @returns {string}
+   */
+  _buildRoutingReason(task, agentName, stage, preferredProviders) {
+    const prefIndex = preferredProviders.indexOf(agentName);
+    const prefPart = prefIndex >= 0 ? `preferred[${prefIndex}]` : 'unpreferred';
+    const typePart = task.type ? `type:${task.type}` : 'type:any';
+    return `${stage}:${typePart}:${prefPart}:quota=${this._quotaRatio(agentName)}`;
   }
 
   /**

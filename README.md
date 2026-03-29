@@ -1,44 +1,83 @@
 # Multi-Agent Orchestrator
 
-**Vendor-neutral orchestrator that coordinates multiple AI coding CLIs (Claude Code, Gemini CLI, Codex CLI) as a team — decomposing work, executing tasks in parallel git worktrees, and merging results.**
+**A vendor-neutral orchestrator that runs Claude Code, Gemini CLI, and Codex as a parallel engineering team — decomposing requests into tasks, executing each in an isolated Docker container + git worktree, and merging results back through a Tech Lead review loop.**
 
 ---
 
-## Architecture
+## What It Is
+
+Most AI coding tools work in isolation: one agent, one conversation, one context window. This project treats multiple AI CLIs as a team. A Tech Lead (you, via Claude Code or Gemini CLI) decomposes work, dispatches tasks to specialized workers, reviews their diffs, and merges accepted results — all driven by MCP tool calls.
 
 ```
-┌──────────────────────────────────────────────────┐
-│         Tech Lead (Claude Code chat)              │
-│     drives each step via CLI verbs                │
-└──────────────────┬───────────────────────────────┘
-                   │
-┌──────────────────▼───────────────────────────────┐
-│              Orchestrator (Library)               │
-│                                                   │
-│  ┌─────────────┐ ┌──────────────┐ ┌───────────┐ │
-│  │  decompose   │ │    assign    │ │   merge   │ │
-│  │  (plan)      │ │  (route by   │ │ (combine  │ │
-│  │              │ │  capability) │ │  results) │ │
-│  └─────────────┘ └──────────────┘ └───────────┘ │
-│                                                   │
-│  ┌──────────────────────────────────────────────┐ │
-│  │         Session State (.agent-team/)          │ │
-│  │    tasks.json  session.json  results/         │ │
-│  └──────────────────────────────────────────────┘ │
-└──────────┬──────────────────┬────────────────────┘
-           │ spawns           │ spawns
-     ┌─────▼─────┐     ┌─────▼─────┐
-     │  Adapter   │     │  Adapter   │
-     │  Claude    │     │  Gemini    │
-     │  Code      │     │  CLI       │
-     └─────┬─────┘     └─────┬─────┘
-           │                  │
-     ┌─────▼─────┐     ┌─────▼─────┐
-     │ git        │     │ git        │
-     │ worktree   │     │ worktree   │
-     │ branch-1   │     │ branch-2   │
-     └───────────┘     └───────────┘
+┌──────────────────────────────────────────────────────────┐
+│              Tech Lead (Claude Code / Gemini CLI)         │
+│         plans · reviews diffs · accepts · rejects         │
+└────────────────────────┬─────────────────────────────────┘
+                         │  MCP (stdio JSON-RPC)
+┌────────────────────────▼─────────────────────────────────┐
+│                   Orchestrator (MCP Server)               │
+│                                                           │
+│   decompose ──► route ──► execute ──► merge               │
+│    (Gemini      (AgentRouter  (Docker     (git             │
+│    planner)      by quota +   workers)    worktrees)       │
+│                  capability)                               │
+│                                                           │
+│                  SQLite task state machine                 │
+│       pending ► claimed ► in_progress ► done/failed       │
+└──────┬─────────────────┬──────────────────┬──────────────┘
+       │                 │                  │
+ ┌─────▼──────┐   ┌──────▼─────┐   ┌───────▼────┐
+ │  Gemini    │   │ Claude Code │   │   Codex    │
+ │  worker    │   │   worker   │   │   worker   │
+ │  container │   │  container │   │  container │
+ └─────┬──────┘   └──────┬─────┘   └───────┬────┘
+       │                 │                  │
+ ┌─────▼──────┐   ┌──────▼─────┐   ┌───────▼────┐
+ │ git        │   │ git        │   │ git        │
+ │ worktree   │   │ worktree   │   │ worktree   │
+ │ agent/T1   │   │ agent/T2   │   │ agent/T3   │
+ └────────────┘   └────────────┘   └────────────┘
 ```
+
+---
+
+## How It Works
+
+### 1. Decomposition
+When `orchestrate(prompt)` is called, Gemini CLI acts as a free-tier planner: it receives the prompt plus project context (module system, existing source files, dependencies) and returns a JSON array of discrete tasks. Each task has an ID, title, description, type, and dependency list. Short prompts (<200 chars, no newline) skip the planner and become a single task directly.
+
+### 2. Routing
+`AgentRouter` assigns each task to an agent using quota-weighted capability matching:
+- Tasks are only routed to agents whose `capabilities` list includes the task `type`
+- Quota limits are respected per job (e.g. Gemini gets ≤70% of tasks)
+- Concurrency limits are enforced per agent (e.g. Gemini runs at most 3 tasks in parallel)
+- If an agent was previously assigned and failed a task, it is excluded on retry
+
+### 3. Execution (Docker + git worktrees)
+Each task runs in an **ephemeral Docker container** with its own **git worktree**:
+- The worktree is a real branch (`agent/<agentName>/<taskId>`) forked from the Tech Lead's current feature branch
+- The container mounts the worktree at `/work` with write access and `.git` at `/project-git` read-write
+- Auth credentials (OAuth tokens, API keys) are bind-mounted from the host into the container
+- Worker guidance files (`GEMINI.md`, `AGENTS.md`) are injected as read-only volume overlays from a tmpdir — the originals in the worktree are never modified, so they can never be accidentally committed
+- `git update-index --assume-unchanged` prevents the originals from appearing in `git status` inside the container
+- Containers run with `--rm` (auto-removed on exit) and a configurable memory limit (default 2 GB)
+- Container stdout/stderr is streamed to `~/.local/share/multi-agent-orchestrator-v3/logs/<taskId>.log`
+
+### 4. State Machine
+Task state lives in SQLite at `~/.local/share/multi-agent-orchestrator-v3/tasks.db`:
+
+```
+pending ──► claimed ──► in_progress ──► done
+                                    └──► failed ──► pending (retry, with backoff)
+```
+
+Failed tasks with retries remaining are re-queued with exponential backoff (`queue='retry'`, `retry_after` = 15s / 30s / 60s). The previous agent is excluded from the retry assignment. A killed task (`task_kill`) is permanently failed — retries are exhausted immediately.
+
+### 5. Review and Merge
+The Tech Lead reviews each completed task by calling `task_diff(id)` — a git diff of the worktree branch versus the base. After reviewing:
+- `task_accept(id)` — merges the worktree branch into the Tech Lead's feature branch and removes the worktree
+- `task_reject(id, reason)` — re-queues the task with the reason appended to its description; the next agent gets the original requirements plus the failure feedback
+- `task_discard(id)` — permanently closes the task without merging
 
 ---
 
@@ -46,14 +85,13 @@
 
 ### Prerequisites
 
-- **Node.js 20+** — [nodejs.org](https://nodejs.org)
-- **Git 2.5+** — for worktree support
-- At least one AI CLI agent:
-  - **Claude Code**: `npm i -g @anthropic-ai/claude-code` and authenticate
-  - **Gemini CLI**: `npm i -g @google/gemini-cli` and authenticate
-  - **Codex CLI**: `npm i -g @openai/codex` and authenticate
-
-See [docs/SETUP.md](docs/SETUP.md) for full installation instructions.
+- **Node.js 20+**
+- **Git 2.5+** (worktree support)
+- **Docker** (running — workers execute in containers)
+- At least one AI CLI authenticated on the host:
+  - Claude Code: `npm i -g @anthropic-ai/claude-code` — authenticate with `claude`
+  - Gemini CLI: `npm i -g @google/gemini-cli` — authenticate with `gemini`
+  - Codex CLI: `npm i -g @openai/codex` — authenticate with `codex`
 
 ### Install
 
@@ -63,194 +101,215 @@ cd copilot_adapter
 npm install
 ```
 
-### Verify agents
+### Build worker images
 
 ```bash
-npm run check-agents
+npm run build:workers
+# or individually:
+docker build -t worker-gemini:latest -f docker/workers/Dockerfile.gemini .
+docker build -t worker-claude:latest -f docker/workers/Dockerfile.claude .
+docker build -t worker-codex:latest  -f docker/workers/Dockerfile.codex  .
+```
+
+### Start the MCP server
+
+```bash
+npm start
+# or: node src/mcp-server/index.js
+```
+
+The server speaks MCP over stdio. Connect your Tech Lead (Claude Code or Gemini CLI) to it via the MCP client config in your IDE or CLI settings.
+
+### Run tests
+
+```bash
+npm test   # 96 tests, node:test runner, no Jest/Mocha required
 ```
 
 ---
 
-## Chat-Driven Mode (Phase 3) — Primary Usage
+## MCP Tools
 
-The Claude Code chat window **is the Tech Lead**. Instead of a black-box command that runs autonomously, you drive each step from your chat session:
+The orchestrator exposes 10 tools over MCP. The Tech Lead calls these instead of writing code directly.
 
-```
-Tech Lead (you) → plans → assigns → reviews → approves/rejects
-Developer agents (Claude Code, Gemini) → implement → report back
-```
-
-### Step-by-step workflow
-
-```bash
-# 1. Decompose the request into discrete tasks
-node src/orchestrator/index.js decompose "Build a REST API with auth and tests"
-
-# 2. Assign tasks to agents by capability (reads agents.json)
-node src/orchestrator/index.js assign
-
-# 3. Execute tasks — all pending, or one at a time
-node src/orchestrator/index.js execute
-node src/orchestrator/index.js execute T1
-
-# 4. Check progress
-node src/orchestrator/index.js status
-
-# 5. Review and accept or reject each result
-node src/orchestrator/index.js accept T1
-node src/orchestrator/index.js reject T2 "Missing error handling on /login"
-
-# 6. Merge accepted branches into main
-node src/orchestrator/index.js merge
-
-# 7. Generate final summary
-node src/orchestrator/index.js report
-```
-
-Rejected tasks are automatically re-queued as `pending` with the rejection reason appended to their description, so the agent gets feedback on retry.
-
----
-
-## CLI Reference
-
-| Verb | Arguments | Description |
+| Tool | Arguments | Description |
 |------|-----------|-------------|
-| `decompose` | `"prompt"` | Decompose a request into tasks; saves to `.agent-team/tasks.json` |
-| `assign` | — | Assign pending tasks to agents by capability (reads `agents.json`) |
-| `execute` | `[taskId]` | Execute all pending tasks, or one specific task by ID |
-| `status` | — | Show current session state: tasks, reviews, next action |
-| `accept` | `<taskId>` | Mark a task result as accepted; eligible for merge |
-| `reject` | `<taskId> "reason"` | Reject a result; re-queues task with feedback for retry |
-| `merge` | `[taskId]` | Merge accepted branches into main; reports conflicts |
-| `report` | — | Generate final summary report |
-| `run` | `"prompt"` | Autonomous mode: decompose → assign → execute → merge in one shot |
-| `--tasks` | `<file>` | Load tasks from JSON file and run autonomously |
-| `--check-agents` | — | Check which AI CLI agents are available in PATH |
-| `--version` | — | Print version |
-| `--help` | — | Show help |
+| `orchestrate` | `prompt` | Full pipeline: decompose → assign → execute. Returns the task board when complete. |
+| `task_status` | `id?` | Live board (all tasks) or a single task's state. |
+| `task_diff` | `id` | Git diff of the completed worktree vs the base branch. **Always call before accepting.** |
+| `task_accept` | `id` | Merge the worktree branch into the Tech Lead's feature branch. Cleans up the worktree. |
+| `task_reject` | `id`, `reason` | Re-queue the task with rejection feedback appended to the description. |
+| `task_discard` | `id` | Permanently close a task without merging. |
+| `task_logs` | `id`, `tail?` | Last N lines of the container's stdout/stderr (falls back to log file after container exits). |
+| `task_kill` | `id` | Force-stop a running container and permanently fail the task (no retry). |
+| `workforce_status` | — | Running containers + task board summary. |
+| `task_reset` | — | Clear all tasks and jobs from the database. Use between jobs. |
 
 ---
 
-## Agent Configuration (`agents.json`)
+## Agent Configuration
 
-Capability routing is controlled by `agents.json` at the project root:
+`agents.json` at the project root controls each agent's quota, concurrency, Docker image, and capabilities. It is hot-reloaded on every `orchestrate()` call — no server restart needed.
 
 ```json
 {
   "claude-code": {
-    "role": "tech-lead-reviewer",
-    "capabilities": ["review"],
-    "weight": 1
+    "image": "worker-claude:latest",
+    "concurrency": 1,
+    "capabilities": ["code", "refactor", "test", "debug", "review"],
+    "quota": 20,
+    "timeoutMs": 300000,
+    "tokenBudget": { "maxInputPerTask": 50000, "maxOutputPerTask": 16000 },
+    "auth": { "mountFrom": "~/.claude", "mountTo": "/home/node/.claude", "mode": "ro" }
   },
   "gemini": {
-    "role": "developer",
-    "capabilities": ["code", "refactor", "test", "debug", "docs", "research", "analysis"],
-    "weight": 1
+    "image": "worker-gemini:latest",
+    "concurrency": 3,
+    "capabilities": ["research", "docs", "analysis", "code", "test", "refactor", "debug", "review"],
+    "quota": 70,
+    "timeoutMs": 300000,
+    "tokenBudget": { "maxInputPerTask": 100000, "maxOutputPerTask": 32000 },
+    "auth": { "mountFrom": "~/.gemini", "mountTo": "/home/node/.gemini", "mode": "rw" }
   },
   "codex": {
-    "role": "developer",
-    "capabilities": ["code", "refactor", "test", "debug", "docs", "research", "analysis", "review"],
-    "weight": 1
+    "image": "worker-codex:latest",
+    "concurrency": 2,
+    "capabilities": ["research", "docs", "analysis", "code", "test", "refactor", "debug", "review"],
+    "quota": 10,
+    "timeoutMs": 300000,
+    "tokenBudget": { "maxInputPerTask": 100000, "maxOutputPerTask": 32000 },
+    "auth": { "mountFrom": "~/.codex", "mountTo": "/home/node/.codex", "mode": "rw" }
   }
 }
 ```
 
-Tasks are routed to the first agent whose `capabilities` includes the task `type`. Adjust this file to change routing without touching code.
+**`quota`** — maximum percentage of tasks in a job that can be assigned to this agent.
+**`concurrency`** — maximum parallel containers for this agent.
+**`auth.mode`** — `ro` for Claude (credentials are read-only); `rw` for Gemini/Codex (they write session state back to the auth dir). Gemini auth is further isolated: credentials are copied to a per-task tmpdir so session history never accumulates between tasks.
 
 ---
 
-## How It Works
+## Worker Images
 
-The orchestrator runs a **step pipeline** for every prompt:
+Each agent runs in a dedicated Docker image:
 
-| Step | Name | What happens |
-|------|------|--------------|
-| 1 | **Decompose** | The first available agent analyzes the prompt and returns a JSON array of independent tasks |
-| 2 | **Assign** | Tasks are routed to agents by capability match (reads `agents.json`) |
-| 3 | **Worktree** | A dedicated `git worktree` is created per task on a fresh branch |
-| 4 | **Execute** | Tasks run concurrently; each agent receives a structured prompt in its worktree |
-| 5 | **Review** | Tech Lead accepts or rejects each result; rejected tasks are re-queued with feedback |
-| 6 | **Merge** | Accepted branches are merged back to main; conflicts detected and reported |
-| 7 | **Report** | Summary printed to stdout and written to `.agent-team/report.json` |
+| Image | Base | Installed CLI | Notes |
+|-------|------|---------------|-------|
+| `worker-gemini:latest` | `node:22-slim` | `@google/gemini-cli@0.34.0` | `git`, `procps`; pre-configured git identity; settings.json override disables host MCP servers |
+| `worker-claude:latest` | `node:22-slim` | `@anthropic-ai/claude-code@latest` | `git`; auth mounted read-only |
+| `worker-codex:latest` | `node:22-slim` | `@openai/codex@latest` | `git` |
+
+Worker guidance files (`GEMINI.md`, `AGENTS.md`) are injected at runtime as read-only bind-mounts — workers receive task-specific instructions without any risk of committing them.
 
 ---
 
 ## Session State
 
-All state is stored in `.agent-team/` (gitignored):
+All state is stored in `~/.local/share/multi-agent-orchestrator-v3/` (ext4, WSL2-safe):
 
 ```
-.agent-team/
-  tasks.json       # task list (managed by TaskManager)
-  session.json     # current phase, reviews, prompt
-  results/         # per-task results (T1.json, T2.json, ...)
-  report.json      # final merged report
+~/.local/share/multi-agent-orchestrator-v3/
+  tasks.db          # SQLite — jobs, tasks, status, token usage, retry state
+  logs/
+    T1.log          # container stdout+stderr for each task (persists after --rm)
+    T2.log
+    ...
 ```
 
-Session phases: `decomposed → assigned → executing → reviewing → merged → complete`
+Worktrees live inside the project under `.worktrees/` (gitignored):
 
----
+```
+.worktrees/
+  gemini-T1/        # worktree for task T1 assigned to gemini
+  claude-T2/        # worktree for task T2 assigned to claude-code
+```
 
-## Autonomous Mode (v1 compat)
+To fully reset state between sessions:
 
 ```bash
-# Single command — runs all steps unattended
-node src/orchestrator/index.js run "Build a REST API with user authentication and unit tests"
+npm run reset-state
+```
 
-# Load tasks from a JSON file
-node src/orchestrator/index.js --tasks tasks.json
+This kills the MCP server, removes all worktrees, deletes all `agent/*` branches, and wipes the SQLite database.
+
+---
+
+## Tech Lead Workflow
+
+The standard session pattern (described in `.agent/TECH-LEAD.md`):
+
+```bash
+# 1. Start fresh on a feature branch
+git checkout master && git pull
+git checkout -b feat/<description>
+
+# 2. Clear any stale tasks from a previous session
+task_reset()
+
+# 3. Dispatch work to the agent workforce
+orchestrate("Build a rate-limiter middleware with unit tests")
+
+# 4. Monitor progress
+task_status()
+workforce_status()
+
+# 5. For each completed task — review then decide
+task_diff("T1")      # read the diff first, always
+task_accept("T1")    # if correct and complete
+task_reject("T2", "Missing error handling for 429 responses — add it")
+
+# 6. When all tasks are done — test and merge
+npm test             # must be 0 failures
+gh pr create ...
+
+# 7. Clean up
+npm run reset-state
 ```
 
 ---
 
-## Configuration
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `pollIntervalMs` | `2000` | How often (ms) the orchestrator polls task status |
-| `taskTimeoutMs` | `900000` | Per-task timeout in ms (15 minutes) |
-
-### Programmatic usage
+## Programmatic Usage
 
 ```js
-import { Orchestrator } from './src/orchestrator/index.js';
+import { Orchestrator } from './src/orchestrator/core.js';
 
-const orchestrator = new Orchestrator('/path/to/your/project', {
-  pollIntervalMs: 5000,
-  taskTimeoutMs: 600_000,
-});
-
+const orchestrator = new Orchestrator('/path/to/your/project');
 await orchestrator.initialize();
-await orchestrator.run('Your task description here');
+
+const result = await orchestrator.orchestrate('Add rate limiting to the API');
+console.log(result.tasks);
+// [{ id: 'T1', title: '...', status: 'done', assigned_to: 'gemini', token_usage: {...} }]
 ```
 
 ---
 
-## Adding a New Adapter
+## Project Structure
 
-See the full guide at [docs/ADDING_ADAPTERS.md](docs/ADDING_ADAPTERS.md). The short version:
-
-1. Create `src/adapters/your-agent.js` extending `AgentAdapter`
-2. Implement `buildArgs(task, context)` and `parseOutput(stdout, stderr, duration_ms)`
-3. Register the adapter in `src/orchestrator/core.js`
-
-```js
-// Minimal skeleton
-import { AgentAdapter } from './base.js';
-
-export class YourAgentAdapter extends AgentAdapter {
-  constructor(options = {}) {
-    super('your-agent', 'your-cli-command', options);
-  }
-
-  buildArgs(task, context) {
-    return ['-p', task.description, '--output-format', 'json'];
-  }
-
-  parseOutput(stdout, stderr, duration_ms) {
-    return { status: 'done', summary: stdout, filesChanged: [], output: stdout, duration_ms };
-  }
-}
+```
+src/
+  orchestrator/core.js      # main orchestration logic (decompose, assign, execute, merge)
+  mcp-server/
+    index.js                # MCP stdio server entry point
+    tools.js                # tool definitions and handlers
+  taskmanager/
+    index.js                # SQLite state machine (updateStatus, retryDue, getClaimableTasks)
+    schema.sql              # jobs and tasks table schema
+  docker/runner.js          # container lifecycle (spawn, kill, logs, inspect)
+  worktree/index.js         # git worktree create/remove/changedFiles
+  router/index.js           # capability + quota-based agent routing
+  logger/index.js           # stderr-only logger (stdout reserved for MCP JSON-RPC)
+docker/
+  workers/
+    Dockerfile.gemini       # Gemini worker image
+    Dockerfile.claude       # Claude Code worker image
+    Dockerfile.codex        # Codex worker image
+    config/
+      gemini-settings.json  # worker-safe Gemini settings (no MCP servers)
+agents.json                 # agent capabilities, quotas, images (hot-reloaded)
+AGENTS.md                   # worker prompt specification for all agents
+GEMINI.md                   # Tech Lead instructions for Gemini CLI sessions
+CLAUDE.md                   # Tech Lead instructions for Claude Code sessions
+.agent/TECH-LEAD.md         # full Tech Lead operating rules (agent-agnostic)
 ```
 
 ---
@@ -259,36 +318,14 @@ export class YourAgentAdapter extends AgentAdapter {
 
 | Feature | **This project** | MCO | AWS CAO |
 |---------|-----------------|-----|---------|
-| Primary focus | Chat-driven step orchestration | Code review aggregation | Hierarchical session management |
-| Isolation mechanism | **Git worktrees** | None stated | tmux sessions |
-| Language | Node.js | Node.js | Python |
-| Infrastructure required | None | None | tmux 3.3+ |
-| Communication layer | File-based (MQTT-ready) | Not abstracted | Session-based |
-| Agents supported | Claude Code, Gemini | Claude, Codex, Gemini, OpenCode, Qwen | Kiro, Claude, Codex, Gemini, Kimi, Copilot |
-| Tech Lead review loop | Yes — accept/reject/retry | No | No |
-| Conflict detection | Yes — git merge | N/A | N/A |
-| A2A protocol roadmap | v2 | No | No |
-
----
-
-## MQTT Roadmap (v2)
-
-The communication layer (`CommChannel`) is designed to be swapped without touching orchestrator or adapter code. The v1 file-based transport (`FileCommChannel`) will be replaced with `MqttCommChannel` (Mosquitto) in v2 when:
-
-- Agents need to run on different machines or containers
-- Real-time event streaming with sub-10ms latency is required
-- Team size exceeds 5 concurrent agents
-
-Planned MQTT topic structure:
-
-```
-team/{team-id}/tasks/created       # new tasks from leader
-team/{team-id}/tasks/claimed       # agent claiming a task
-team/{team-id}/tasks/status        # status updates
-team/{team-id}/agent/{name}/inbox  # directed messages
-team/{team-id}/broadcast           # all agents subscribe
-team/{team-id}/heartbeat           # liveness (retain=true)
-```
+| Primary interface | MCP tools (chat-driven) | CLI verbs | Python SDK |
+| Worker isolation | Docker containers + git worktrees | None | tmux sessions |
+| State persistence | SQLite (ext4, WAL-safe) | JSON files | Session-based |
+| Retry with backoff | Yes — exponential, per-agent exclusion | No | No |
+| Tech Lead review loop | Yes — diff → accept/reject/retry | No | No |
+| Stub injection | Docker volume overlay (`:ro`) | N/A | N/A |
+| Agents supported | Claude Code, Gemini CLI, Codex | Claude, Codex, Gemini | Kiro, Claude, Codex, Gemini |
+| Hot-reload config | Yes (`agents.json` per call) | No | No |
 
 ---
 
@@ -296,11 +333,11 @@ team/{team-id}/heartbeat           # liveness (retain=true)
 
 1. Fork and clone the repo
 2. `npm install`
-3. Run `npm run check-agents` to verify your environment
-4. Make changes; keep ES module syntax (`import`/`export`)
-5. Run `npm test` before submitting a PR
-6. All task mutations must go through `TaskManager` — never write `tasks.json` directly
-7. New adapters must implement the `AgentAdapter` interface from `src/adapters/base.js`
+3. Build worker images: `npm run build:workers`
+4. Make changes — keep ES module syntax (`import`/`export`, `.js` extensions)
+5. `npm test` before submitting (must be 0 failures, node:test runner)
+6. All task state mutations must go through `TaskManager` — never write to `tasks.db` directly outside of it
+7. MCP tools must not write to stdout except via the MCP SDK — use `Logger` (stderr only)
 
 ---
 
