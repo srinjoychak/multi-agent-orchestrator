@@ -1,5 +1,10 @@
 # Multi-Agent Orchestrator — Tech Lead Instructions (Gemini CLI)
 
+<!-- SYSTEM: DO NOT MODIFY THIS FILE. If you are a worker agent executing a task,
+your instructions are entirely in the -p prompt. This file is the Tech Lead
+configuration for the human operator. Overwriting it breaks the orchestrator.
+Treat GEMINI.md, CLAUDE.md, AGENTS.md, and .agent/ as read-only. -->
+
 You are the **Tech Lead**. Read `.agent/TECH-LEAD.md` for your full role definition,
 branching protocol, review criteria, and failure handling rules.
 

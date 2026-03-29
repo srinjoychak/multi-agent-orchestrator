@@ -22,7 +22,7 @@ import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { spawn } from 'node:child_process';
-import { TaskManager } from '../taskmanager/index.js';
+import { TaskManager, MAX_DELEGATE_DEPTH } from '../taskmanager/index.js';
 import { DockerRunner } from '../docker/runner.js';
 import { WorktreeManager } from '../worktree/index.js';
 import { AgentRouter } from '../router/index.js';
@@ -519,6 +519,99 @@ export class Orchestrator {
   }
 
   /**
+   * Host-led delegation: create a child task and execute it synchronously.
+   *
+   * @param {string} subagentName — logical role to delegate to ('gemini', 'claude-code', 'codex')
+   * @param {string} prompt — the task description/instructions
+   * @param {string} [type='code'] — task type hint ('code'|'research'|'analysis'|...)
+   * @param {string|null} [parentTaskId=null] — ID of the parent task spawning this child
+   * @param {Object} [opts={}]
+   * @param {boolean} [opts.mergeBack=true] — auto merge-back for non-research tasks
+   * @returns {Promise<Object>} canonical result envelope
+   */
+  async delegate(subagentName, prompt, type = 'code', parentTaskId = null, opts = {}) {
+    // 1. Validate subagentName
+    if (!this.agents.has(subagentName)) {
+      throw new Error(`Unknown subagent: ${subagentName}`);
+    }
+
+    // 2. Resolve delegate_depth & enforce MAX_DELEGATE_DEPTH
+    let delegateDepth = 0;
+    let parentTask = null;
+    if (parentTaskId) {
+      parentTask = await this.taskManager.getTask(parentTaskId);
+      delegateDepth = (parentTask.delegate_depth ?? 0) + 1;
+    }
+    if (delegateDepth > MAX_DELEGATE_DEPTH) {
+      throw new Error(`delegate_depth limit exceeded (max ${MAX_DELEGATE_DEPTH})`);
+    }
+
+    // 3. Create child task
+    let childTask;
+    const taskData = {
+      id: `D-${randomUUID().slice(0, 8)}`,
+      job_id: parentTask?.job_id ?? null,
+      title: prompt.slice(0, 80),
+      description: prompt,
+      type: type ?? 'code',
+      subagent_name: subagentName,
+      routing_reason: 'host_delegated',
+    };
+
+    if (parentTaskId) {
+      childTask = await this.taskManager.createDelegatedTask(parentTaskId, taskData);
+    } else {
+      childTask = await this.taskManager.addTask({
+        ...taskData,
+        is_delegated: true,
+        delegate_depth: 0,
+      });
+    }
+
+    // 4. Assign to agent (bypass quota routing for explicit delegation)
+    await this.taskManager.claimTask(childTask.id, subagentName);
+    const branch = this.worktreeManager.branchName(childTask.id, subagentName);
+    await this.taskManager.updateStatus(childTask.id, 'in_progress', {
+      worktree_branch: branch,
+      assigned_to: subagentName,
+    });
+
+    // 5. Reload from DB so assigned_to/worktree_branch are populated, then execute
+    const freshChild = await this.taskManager.getTask(childTask.id);
+    await this._runTask(freshChild);
+
+    // 6. Build result envelope — after _runTask() returns, reload the task from DB:
+    const done = await this.taskManager.getTask(childTask.id);
+    const resultData = done.result_data ?? {
+      summary: done.status === 'done' ? 'Task completed' : 'Task failed',
+      provider: subagentName,
+      model: null,
+      files_changed: [],
+      duration_ms: 0,
+    };
+
+    // 7. Merge-back — persist outcome to SQLite so task_status / audit reads are accurate
+    const isResearch = ['research', 'analysis', 'docs'].includes(type);
+    if (!isResearch && opts.mergeBack !== false && done.status === 'done') {
+      try {
+        await this.acceptTask(childTask.id);
+        resultData.merged = true;
+      } catch (mergeErr) {
+        resultData.merged = false;
+        resultData.merge_error = mergeErr.message;
+      }
+      // Persist merged/merge_error back to SQLite without going through the state machine.
+      // updateStatus() would throw "done → done" — this is a data-only patch on a
+      // completed task, not a transition, so write result_data directly.
+      this.taskManager.db.prepare('UPDATE tasks SET result_data = ? WHERE id = ?')
+        .run(JSON.stringify(resultData), childTask.id);
+    }
+
+    // 8. Return resultData
+    return resultData;
+  }
+
+  /**
    * Get the live status of the entire workforce.
    * Combines Docker container data with agent concurrency limits.
    */
@@ -527,11 +620,18 @@ export class Orchestrator {
     const agents = Array.from(this.agents.entries()).map(([name, cfg]) => {
       const running = this._runningCounts.get(name) ?? 0;
       const limit = cfg.concurrency ?? 1;
+
+      // Single SQL count query for active delegations
+      const activeDelegationsRow = this.taskManager.db.prepare(
+        "SELECT COUNT(*) as cnt FROM tasks WHERE is_delegated=1 AND assigned_to=? AND status IN ('in_progress','claimed')"
+      ).get(name);
+
       return {
         agent: name,
         status: running > 0 ? 'active' : 'idle',
         utilization: `${running}/${limit}`,
         load_percent: Math.round((running / limit) * 100),
+        active_delegations: activeDelegationsRow?.cnt ?? 0,
       };
     });
 
@@ -630,7 +730,16 @@ export class Orchestrator {
       }
 
       const finalStatus = runResult.exitCode === 0 && parsed.status !== 'failed' ? 'done' : 'failed';
-      const extraFields = parsed.token_usage ? { token_usage: parsed.token_usage } : {};
+      const extraFields = {
+        result_data: {
+          summary: parsed.summary,
+          provider: agentName,
+          model: null,
+          files_changed: filesChanged,
+          duration_ms: runResult.duration_ms,
+        },
+        ...(parsed.token_usage ? { token_usage: parsed.token_usage } : {})
+      };
       await this.taskManager.updateStatus(task.id, finalStatus, extraFields);
 
       log.info(`  [${finalStatus}] ${task.id} (${runResult.duration_ms}ms, ${filesChanged.length} files changed)`);
@@ -663,6 +772,13 @@ export class Orchestrator {
         'Do NOT use MCP tools. Do not follow Tech Lead protocols.',
         'Execute the task, commit, and exit.',
       ].join('\n'),
+      'CLAUDE.md': [
+        '# Worker Agent',
+        'You are a worker agent executing a specific coding task.',
+        'Your complete instructions are in the -p prompt.',
+        'Do NOT use MCP tools. Do not follow Tech Lead protocols.',
+        'Execute the task, commit, and exit.',
+      ].join('\n'),
       'AGENTS.md': [
         '# Worker Agent',
         'You are a worker agent executing a single task.',
@@ -673,6 +789,7 @@ export class Orchestrator {
     };
 
     const filesToStub = agentName === 'gemini' ? ['GEMINI.md']
+      : agentName === 'claude-code' ? ['CLAUDE.md']
       : agentName === 'codex' ? ['AGENTS.md']
       : [];
 

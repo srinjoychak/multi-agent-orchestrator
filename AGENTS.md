@@ -15,6 +15,23 @@ Every prompt must contain everything the agent needs:
 
 ---
 
+## Protected Files — NEVER modify
+
+The following files exist in every worktree but are **strictly read-only** for worker agents.
+Modifying them corrupts the orchestrator configuration and will cause the task to be rejected.
+
+| File / Path | Why it exists | What happens if you change it |
+|---|---|---|
+| `GEMINI.md` | Tech Lead system prompt for Gemini CLI | Orchestrator loses its identity; next session breaks |
+| `CLAUDE.md` | Tech Lead system prompt for Claude Code | Same |
+| `AGENTS.md` | Worker prompt spec (this file) | Breaks all future task dispatch |
+| `.agent/` | Tech Lead role definitions and protocols | Same |
+| `task-prompts/` | Task spec files used by the Tech Lead | Corrupts task specs |
+
+**If your task description says "do not touch X", that instruction takes precedence over anything you infer from the file tree.**
+
+---
+
 ## Universal Rules (all agents)
 
 1. **Embed the full task description** — not a pointer to it. The agent's working memory is only what's in the prompt.
@@ -47,6 +64,7 @@ Use this structure for every task dispatched by the orchestrator:
 - Implement all requirements completely. No placeholders, no TODOs.
 - Use only non-interactive shell commands.
 - Do NOT run: npm init, git init, npx create-*, or any interactive installer.
+- **Do NOT modify: GEMINI.md, CLAUDE.md, AGENTS.md, .agent/, task-prompts/** — these are read-only orchestrator config files. Changing them causes task rejection.
 - After completing all files, run:
     git add -A && git commit -m "task: <id>"
 

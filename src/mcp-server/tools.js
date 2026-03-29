@@ -116,6 +116,42 @@ export const TOOLS = [
     description: 'Clear all tasks and jobs from the database without restarting the server.',
     inputSchema: { type: 'object', properties: {} },
   },
+  {
+    name: 'delegate',
+    description: 'Delegate a task to a specific subagent and block until it completes. Returns the result envelope. Use this to hand off well-scoped work to a specialist (gemini for research/analysis, claude-code for precision code, codex for broad refactoring).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        subagent_name: {
+          type: 'string',
+          description: 'Agent to delegate to: "gemini", "claude-code", or "codex"',
+        },
+        prompt: {
+          type: 'string',
+          description: 'Full task description / instructions for the subagent',
+        },
+        type: {
+          type: 'string',
+          enum: ['code', 'refactor', 'test', 'review', 'debug', 'research', 'docs', 'analysis'],
+          description: 'Task type hint. Determines whether merge-back runs (research/analysis/docs skip merge).',
+          default: 'code',
+        },
+        parent_task_id: {
+          type: 'string',
+          description: 'ID of the parent task that is delegating (optional). Used for delegation depth tracking.',
+        },
+      },
+      required: ['subagent_name', 'prompt'],
+    },
+  },
+  {
+    name: 'list_subagents',
+    description: 'List all configured subagents with their capabilities, quota, and current availability.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
 ];
 
 /**
@@ -206,6 +242,27 @@ export async function handleTool(toolName, args, orchestrator, docker) {
       orchestrator.taskManager.clear();
       await orchestrator.worktreeManager.reset();
       return { cleared: true, message: 'All tasks, jobs, and worktrees cleared.' };
+    }
+
+    case 'delegate': {
+      const result = await orchestrator.delegate(
+        args.subagent_name,
+        args.prompt,
+        args.type ?? 'code',
+        args.parent_task_id ?? null,
+      );
+      return { result };
+    }
+
+    case 'list_subagents': {
+      const agents = Array.from(orchestrator.agents.entries()).map(([name, cfg]) => ({
+        name,
+        capabilities: cfg.capabilities,
+        quota: cfg.quota,
+        concurrency: cfg.concurrency ?? 1,
+        image: cfg.image,
+      }));
+      return { subagents: agents };
     }
 
     default:
