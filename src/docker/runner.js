@@ -161,6 +161,11 @@ export class DockerRunner {
     dockerArgs.push('-e', `GIT_COMMON_DIR=/project-git`);
     dockerArgs.push('-e', `GIT_WORK_TREE=/work`);
 
+    // Extra bind-mounts (e.g. stub files injected over git-tracked paths)
+    for (const mount of (options.extraMounts ?? [])) {
+      dockerArgs.push('-v', mount);
+    }
+
     dockerArgs.push(image, ...cliArgs);
 
     const startTime = Date.now();

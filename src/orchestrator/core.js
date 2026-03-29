@@ -573,11 +573,12 @@ export class Orchestrator {
     }
 
     let worktreePath = null;
+    let stubInfo = null;
     try {
       // Create worktree
       ({ path: worktreePath } = await this.worktreeManager.create(task.id, agentName));
 
-      const stubbedFiles = await this._stubWorkerGuidance(agentName, worktreePath);
+      stubInfo = await this._stubWorkerGuidance(agentName, worktreePath);
 
       // Build CLI prompt
       const prompt = this._buildPrompt(task, agentName, worktreePath);
@@ -590,6 +591,9 @@ export class Orchestrator {
       this.taskManager.db.prepare('UPDATE tasks SET container_id = ? WHERE id = ?')
         .run(containerName, task.id);
 
+      // Build extra bind-mounts: stub files injected read-only over git-tracked originals
+      const extraMounts = (stubInfo.stubs ?? []).map(s => `${s.hostPath}:${s.containerPath}:ro`);
+
       // Run in Docker
       let runResult;
       try {
@@ -598,10 +602,10 @@ export class Orchestrator {
           agentName,
           worktreePath,
           cliArgs,
-          options: { timeoutMs: agentCfg.timeoutMs, image: agentCfg.image, auth: agentCfg.auth },
+          options: { timeoutMs: agentCfg.timeoutMs, image: agentCfg.image, auth: agentCfg.auth, extraMounts },
         });
       } finally {
-        await this._restoreWorkerGuidance(worktreePath, stubbedFiles);
+        await this._restoreWorkerGuidance(worktreePath, stubInfo);
       }
 
       // Parse output
@@ -633,8 +637,8 @@ export class Orchestrator {
       return parsed;
 
     } catch (err) {
-      if (worktreePath) {
-        await this._restoreWorkerGuidance(worktreePath, ['GEMINI.md', 'AGENTS.md']);
+      if (worktreePath && stubInfo) {
+        await this._restoreWorkerGuidance(worktreePath, stubInfo);
       }
       log.error(`  [error] ${task.id}: ${err.message}`);
       // updateStatus('failed') handles auto-retry internally if retries < max_retries
@@ -642,55 +646,69 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Write stub guidance files to a tmpdir OUTSIDE the worktree, then tell git to
+   * ignore them with `--assume-unchanged` so `git add -A` inside the container
+   * never stages them. The stubs are injected via Docker bind-mount over the
+   * git-tracked originals (`:ro`), so the worker CLI reads them but cannot commit them.
+   *
+   * @returns {{ stubDir: string|null, stubs: Array<{hostPath,containerPath,filename}>, filenames: string[] }}
+   */
   async _stubWorkerGuidance(agentName, worktreePath) {
-    const targets = [];
+    const STUB_CONTENT = {
+      'GEMINI.md': [
+        '# Worker Agent',
+        'You are a worker agent executing a specific coding task.',
+        'Your complete instructions are in the -p prompt.',
+        'Do NOT use MCP tools. Do not follow Tech Lead protocols.',
+        'Execute the task, commit, and exit.',
+      ].join('\n'),
+      'AGENTS.md': [
+        '# Worker Agent',
+        'You are a worker agent executing a single task.',
+        'Follow the prompt exactly and do not orchestrate other agents.',
+        'Do not use MCP tools. Do not follow Tech Lead protocols.',
+        'Implement, commit, report, and exit.',
+      ].join('\n'),
+    };
 
-    if (agentName === 'gemini') {
-      const geminiMdPath = join(worktreePath, 'GEMINI.md');
-      if (existsSync(geminiMdPath)) {
-        await writeFile(
-          geminiMdPath,
-          [
-            '# Worker Agent',
-            'You are a worker agent executing a specific coding task.',
-            'Your complete instructions are in the -p prompt.',
-            'Do NOT use MCP tools. Do not follow Tech Lead protocols.',
-            'Execute the task, commit, and exit.',
-          ].join('\n')
-        );
-        targets.push('GEMINI.md');
-      }
+    const filesToStub = agentName === 'gemini' ? ['GEMINI.md']
+      : agentName === 'codex' ? ['AGENTS.md']
+      : [];
+
+    if (filesToStub.length === 0) return { stubDir: null, stubs: [], filenames: [] };
+
+    const stubDir = await mkdtemp(join(tmpdir(), 'worker-stubs-'));
+    const stubs = [];
+
+    for (const filename of filesToStub) {
+      if (!existsSync(join(worktreePath, filename))) continue;
+      const stubHostPath = join(stubDir, filename);
+      await writeFile(stubHostPath, STUB_CONTENT[filename]);
+      // Tell git to skip this file in `git add -A` / status checks
+      await execFileAsync('git', ['update-index', '--assume-unchanged', filename], { cwd: worktreePath })
+        .catch(() => {}); // non-fatal: file may not be in index yet
+      stubs.push({ hostPath: stubHostPath, containerPath: `/work/${filename}`, filename });
     }
 
-    if (agentName === 'codex') {
-      const agentsMdPath = join(worktreePath, 'AGENTS.md');
-      if (existsSync(agentsMdPath)) {
-        await writeFile(
-          agentsMdPath,
-          [
-            '# Worker Agent',
-            'You are a worker agent executing a single task.',
-            'Follow the prompt exactly and do not orchestrate other agents.',
-            'Do not use MCP tools. Do not follow Tech Lead protocols.',
-            'Implement, commit, report, and exit.',
-          ].join('\n')
-        );
-        targets.push('AGENTS.md');
-      }
-    }
-
-    return targets;
+    return { stubDir, stubs, filenames: stubs.map(s => s.filename) };
   }
 
-  async _restoreWorkerGuidance(worktreePath, files) {
-    // Restore from the base branch, NOT from HEAD of the worktree.
-    // HEAD is the worker's commit which may have already committed the stub.
-    const base = await this.worktreeManager._getBaseBranch();
-    for (const file of files) {
-      const path = join(worktreePath, file);
-      if (!existsSync(path)) continue;
-      await execFileAsync('git', ['checkout', base, '--', file], { cwd: worktreePath })
-        .catch(() => execFileAsync('git', ['checkout', '--', file], { cwd: worktreePath }).catch(() => {}));
+  /**
+   * Undo `--assume-unchanged` so the file is visible to git again, then clean up
+   * the tmpdir. The original git-tracked file is untouched — no checkout needed.
+   *
+   * @param {string} worktreePath
+   * @param {{ stubDir: string|null, stubs: Array<{filename}> }} stubInfo
+   */
+  async _restoreWorkerGuidance(worktreePath, stubInfo) {
+    if (!stubInfo?.stubs?.length) return;
+    for (const stub of stubInfo.stubs) {
+      await execFileAsync('git', ['update-index', '--no-assume-unchanged', stub.filename], { cwd: worktreePath })
+        .catch(() => {});
+    }
+    if (stubInfo.stubDir) {
+      await rm(stubInfo.stubDir, { recursive: true, force: true }).catch(() => {});
     }
   }
 
