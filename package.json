@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "description": "Orchestrates multiple AI coding CLI agents (Claude Code, Gemini CLI) working as a team",
   "type": "module",
-  "main": "src/orchestrator/index.js",
+  "main": "src/orchestrator/core.js",
   "bin": {
-    "orchestrate": "./src/orchestrator/index.js"
+    "orchestrate": "./src/mcp-server/index.js"
   },
   "scripts": {
     "start": "node src/mcp-server/index.js",
