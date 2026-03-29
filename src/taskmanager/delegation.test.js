@@ -14,6 +14,12 @@ test('TaskManager Delegation', async (t) => {
   const tm = new TaskManager(TEST_STATE_DIR);
   await tm.initialize();
 
+  // Pre-register all jobs used across subtests (foreign key constraint on tasks.job_id)
+  for (const [id, prompt] of [
+    ['J1','job1'],['J2','job2'],['J3','job3'],['J4','job4'],
+    ['J5','job5'],['J6','job6'],['J7','job7'],['J8','job8'],
+  ]) tm.addJob(id, prompt);
+
   await t.test('createDelegatedTask sets correct fields', async () => {
     const parent = await tm.addTask({ title: 'Root Task', job_id: 'J1' });
     const child = await tm.createDelegatedTask(parent.id, { title: 'Child Task' });
