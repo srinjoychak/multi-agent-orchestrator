@@ -3,7 +3,7 @@
     "image": "worker-claude:latest",
     "concurrency": 1,
     "capabilities": ["code", "refactor", "test", "debug", "review"],
-    "quota": 30,
+    "quota": 20,
     "timeoutMs": 300000,
     "tokenBudget": { "maxInputPerTask": 50000, "maxOutputPerTask": 16000 },
     "auth": { "mountFrom": "~/.claude", "mountTo": "/home/node/.claude", "mode": "ro" }
@@ -21,7 +21,7 @@
     "image": "worker-codex:latest",
     "concurrency": 2,
     "capabilities": ["research", "docs", "analysis", "code", "test", "refactor", "debug", "review"],
-    "quota": 20,
+    "quota": 10,
     "timeoutMs": 300000,
     "tokenBudget": { "maxInputPerTask": 100000, "maxOutputPerTask": 32000 },
     "auth": { "mountFrom": "~/.codex", "mountTo": "/home/node/.codex", "mode": "rw" }
