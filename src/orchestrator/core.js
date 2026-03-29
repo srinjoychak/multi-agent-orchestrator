@@ -576,8 +576,9 @@ export class Orchestrator {
       assigned_to: subagentName,
     });
 
-    // 5. Execute via _runTask() — this is synchronous for the caller
-    await this._runTask(childTask);
+    // 5. Reload from DB so assigned_to/worktree_branch are populated, then execute
+    const freshChild = await this.taskManager.getTask(childTask.id);
+    await this._runTask(freshChild);
 
     // 6. Build result envelope — after _runTask() returns, reload the task from DB:
     const done = await this.taskManager.getTask(childTask.id);
