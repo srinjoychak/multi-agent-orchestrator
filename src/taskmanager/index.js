@@ -195,6 +195,7 @@ export class TaskManager {
     const tasks = await this.getJobTasks(jobId);
     return tasks.filter(t => {
       if (t.status !== 'pending') return false;
+      if (t.queue === 'retry') return false;
       if (t.forced_agent && t.forced_agent !== agentName) return false;
       return t.depends_on.every(dep => tasks.find(x => x.id === dep)?.status === 'done');
     });
@@ -274,11 +275,14 @@ export class TaskManager {
         if (updated.retries < updated.max_retries) {
           const prev = JSON.parse(updated.previous_agents ?? '[]');
           if (updated.assigned_to && !prev.includes(updated.assigned_to)) prev.push(updated.assigned_to);
+          const backoffSecs = Math.pow(2, updated.retries) * 15; // 15s, 30s, 60s...
           this.db.prepare(`
-            UPDATE tasks SET status='pending', assigned_to=NULL, claimed_at=NULL,
-              completed_at=NULL, container_id=NULL, retries=retries+1, previous_agents=?
+            UPDATE tasks SET status='pending', queue='retry',
+              retry_after=datetime('now', '+' || ? || ' seconds'),
+              assigned_to=NULL, claimed_at=NULL, completed_at=NULL,
+              container_id=NULL, retries=retries+1, previous_agents=?
             WHERE id=?
-          `).run(JSON.stringify(prev), taskId);
+          `).run(backoffSecs, JSON.stringify(prev), taskId);
         }
       }
     })();
@@ -392,6 +396,7 @@ export class TaskManager {
     const tasks = await this.getTasks();
     return tasks.filter(t => {
       if (t.status !== 'pending') return false;
+      if (t.queue === 'retry') return false;
       return t.depends_on.every(dep => tasks.find(x => x.id === dep)?.status === 'done');
     });
   }
