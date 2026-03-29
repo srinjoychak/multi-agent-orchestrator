@@ -26,6 +26,9 @@ import { TaskManager } from '../taskmanager/index.js';
 import { DockerRunner } from '../docker/runner.js';
 import { WorktreeManager } from '../worktree/index.js';
 import { AgentRouter } from '../router/index.js';
+import { Logger } from '../logger/index.js';
+
+const log = new Logger('orchestrator');
 
 const execFileAsync = promisify(execFile);
 
@@ -106,9 +109,9 @@ export class Orchestrator {
    */
   async initialize(options = {}) {
     if (!options.quiet) {
-      console.log('');
-      console.log('Multi-Agent Orchestrator v3');
-      console.log('');
+      log.info('');
+      log.info('Multi-Agent Orchestrator v3');
+      log.info('');
     }
 
     // Create state directories
@@ -136,9 +139,9 @@ export class Orchestrator {
     this.router = new AgentRouter(adapterMap, Object.fromEntries(this.agents));
 
     if (!options.quiet) {
-      console.log(`  Agents: ${Array.from(this.agents.keys()).join(', ')}`);
-      console.log(`  State: ${this.stateDir}`);
-      console.log('');
+      log.info(`  Agents: ${Array.from(this.agents.keys()).join(', ')}`);
+      log.info(`  State: ${this.stateDir}`);
+      log.info('');
     }
   }
 
@@ -151,7 +154,7 @@ export class Orchestrator {
   async orchestrate(userPrompt, options = {}) {
     const jobId = randomUUID();
     this.taskManager.addJob(jobId, userPrompt);
-    console.log(`[orchestrator] Job ${jobId} started`);
+    log.info(`[orchestrator] Job ${jobId} started`);
 
     // Hot-reload agents.json (Gap 7)
     const agentsJson = await this._loadAgentsJson();
@@ -176,7 +179,7 @@ export class Orchestrator {
     const allDone = finalTasks.every(t => t.status === 'done');
     this.taskManager.finishJob(jobId, allDone ? 'done' : 'failed');
 
-    console.log(`[orchestrator] Job ${jobId} finished — ${allDone ? 'done' : 'failed'}`);
+    log.info(`[orchestrator] Job ${jobId} finished — ${allDone ? 'done' : 'failed'}`);
     return { jobId, tasks: finalTasks };
   }
 
@@ -252,7 +255,7 @@ export class Orchestrator {
         parsed.map(t => ({ ...t, job_id: jobId ?? null, type: VALID_TYPES.has(t.type) ? t.type : 'code' }))
       );
     } catch {
-      console.error('[orchestrator] Decompose failed, creating single task');
+      log.error('[orchestrator] Decompose failed, creating single task');
       return this.taskManager.addTasks([{
         id: 'T1',
         job_id: jobId ?? null,
@@ -282,9 +285,9 @@ export class Orchestrator {
         const branch = this.worktreeManager.branchName(task.id, agentName);
         await this.taskManager.updateStatus(task.id, 'in_progress', { worktree_branch: branch, assigned_to: agentName });
         assigned.push(task.id);
-        console.log(`  [assign] ${task.id} "${task.title}" -> ${agentName}`);
+        log.info(`  [assign] ${task.id} "${task.title}" -> ${agentName}`);
       } catch (err) {
-        console.error(`  [assign] Failed to assign ${task.id}: ${err.message}`);
+        log.error(`  [assign] Failed to assign ${task.id}: ${err.message}`);
       }
     }
     return assigned;
@@ -322,13 +325,13 @@ export class Orchestrator {
 
       // Circuit breaker: max iterations
       if (iteration > maxIterations) {
-        console.error(`[orchestrator] Circuit breaker: exceeded ${maxIterations} iterations. Stopping.`);
+        log.error(`[orchestrator] Circuit breaker: exceeded ${maxIterations} iterations. Stopping.`);
         break;
       }
 
       // Circuit breaker: total timeout
       if (elapsed > totalTimeoutMs) {
-        console.error(`[orchestrator] Circuit breaker: exceeded ${Math.round(totalTimeoutMs / 1000)}s total timeout. Stopping.`);
+        log.error(`[orchestrator] Circuit breaker: exceeded ${Math.round(totalTimeoutMs / 1000)}s total timeout. Stopping.`);
         break;
       }
 
@@ -340,7 +343,7 @@ export class Orchestrator {
         stuckCount++;
         const active = allTasks.filter(t => t.status !== 'done' && t.status !== 'failed');
         if (active.length === 0 || stuckCount >= 3) {
-          console.error(`[orchestrator] Circuit breaker: task states unchanged for ${stuckCount} consecutive iterations. Stopping.`);
+          log.error(`[orchestrator] Circuit breaker: task states unchanged for ${stuckCount} consecutive iterations. Stopping.`);
           break;
         }
       } else {
@@ -355,14 +358,14 @@ export class Orchestrator {
           return dep?.status === 'failed';
         });
         if (failedDep) {
-          await this.taskManager.updateStatus(task.id, 'failed');
+          this.taskManager.db.prepare("UPDATE tasks SET status='failed', retries=max_retries WHERE id=? AND status='pending'").run(task.id);
         }
       }
 
       if (await this.taskManager.isAllComplete(jobId)) break;
 
       const readyTasks = allTasks.filter(t => {
-        if (t.status !== 'pending') return false;
+        if (t.status !== 'pending' || t.queue === 'retry') return false;
         return t.depends_on.every(depId => allTasks.find(x => x.id === depId)?.status === 'done');
       });
 
@@ -389,7 +392,7 @@ export class Orchestrator {
       });
 
       if (concurrencyFiltered.length > 0) {
-        console.log(`  [wave ${iteration}] starting ${concurrencyFiltered.map(t => t.id).join(', ')}`);
+        log.info(`  [wave ${iteration}] starting ${concurrencyFiltered.map(t => t.id).join(', ')}`);
         concurrencyFiltered.forEach(t => {
           dispatched.add(t.id);
           const agentName = t.assigned_to;
@@ -410,7 +413,7 @@ export class Orchestrator {
         }));
       } else {
         const s = await this.taskManager.getSummary(jobId);
-        console.log(`  [iter ${iteration}/${maxIterations}] done=${s.done} running=${s.in_progress} pending=${s.pending} failed=${s.failed} elapsed=${Math.round(elapsed / 1000)}s`);
+        log.info(`  [iter ${iteration}/${maxIterations}] done=${s.done} running=${s.in_progress} pending=${s.pending} failed=${s.failed} elapsed=${Math.round(elapsed / 1000)}s`);
         await new Promise(r => setTimeout(r, this.pollIntervalMs));
       }
     }
@@ -507,6 +510,7 @@ export class Orchestrator {
     const killed = await this.docker.kill(task.container_id);
     if (killed) {
       await this.taskManager.updateStatus(taskId, 'failed').catch(() => {});
+      this.taskManager.db.prepare('UPDATE tasks SET retries=max_retries WHERE id=?').run(taskId);
       if (task.assigned_to) {
         await this.worktreeManager.prune(taskId, task.assigned_to).catch(() => {});
       }
@@ -551,7 +555,7 @@ export class Orchestrator {
   async reset() {
     await this.worktreeManager.reset();
     this.taskManager.clear();
-    console.log('[orchestrator] Hard reset complete');
+    log.info('[orchestrator] Hard reset complete');
   }
 
   // ─── Private ─────────────────────────────────────────────────────────────────
@@ -564,7 +568,7 @@ export class Orchestrator {
     const agentName = task.assigned_to;
     const agentCfg = this.agents.get(agentName);
     if (!agentCfg) {
-      console.error(`  [error] No agent config for ${agentName}`);
+      log.error(`  [error] No agent config for ${agentName}`);
       return;
     }
 
@@ -579,7 +583,7 @@ export class Orchestrator {
       const prompt = this._buildPrompt(task, agentName, worktreePath);
       const cliArgs = agentCfg.cliArgs(prompt);
 
-      console.log(`  [exec] ${task.id} via ${agentName} in Docker`);
+      log.info(`  [exec] ${task.id} via ${agentName} in Docker`);
       const jobPrefix = task.job_id ? `${task.job_id.slice(0, 8)}-` : '';
       const containerName = `worker-${agentName}-${jobPrefix}${task.id}`;
       // Record container_id without status change — assignTasks already set in_progress
@@ -616,7 +620,7 @@ export class Orchestrator {
       // Prevents silent "done" when an agent ran but wrote nothing.
       const requiresOutput = ['code', 'refactor', 'test', 'docs'].includes(task.type);
       if (filesChanged.length === 0 && requiresOutput && runResult.exitCode === 0) {
-        console.error(`  [fail] ${task.id}: agent produced no file changes for a ${task.type} task`);
+        log.error(`  [fail] ${task.id}: agent produced no file changes for a ${task.type} task`);
         await this.taskManager.updateStatus(task.id, 'failed').catch(() => {});
         return;
       }
@@ -625,14 +629,14 @@ export class Orchestrator {
       const extraFields = parsed.token_usage ? { token_usage: parsed.token_usage } : {};
       await this.taskManager.updateStatus(task.id, finalStatus, extraFields);
 
-      console.log(`  [${finalStatus}] ${task.id} (${runResult.duration_ms}ms, ${filesChanged.length} files changed)`);
+      log.info(`  [${finalStatus}] ${task.id} (${runResult.duration_ms}ms, ${filesChanged.length} files changed)`);
       return parsed;
 
     } catch (err) {
       if (worktreePath) {
         await this._restoreWorkerGuidance(worktreePath, ['GEMINI.md', 'AGENTS.md']);
       }
-      console.error(`  [error] ${task.id}: ${err.message}`);
+      log.error(`  [error] ${task.id}: ${err.message}`);
       // updateStatus('failed') handles auto-retry internally if retries < max_retries
       await this.taskManager.updateStatus(task.id, 'failed').catch(() => {});
     }
@@ -758,7 +762,7 @@ export class Orchestrator {
       cp.stdout.on('data', d => { stdout += d; });
       cp.stderr.on('data', d => { stderr += d; });
       const timer = setTimeout(() => { cp.kill(); reject(new Error(`${command} timed out`)); }, timeoutMs);
-      cp.on('exit', () => { clearTimeout(timer); resolve(stdout); });
+      cp.on('exit', (code) => { clearTimeout(timer); if (code === 0) { resolve(stdout); } else { reject(new Error(command + ' exited ' + code + ': ' + stderr.slice(0, 200))); } });
       cp.on('error', reject);
     });
   }
@@ -787,7 +791,7 @@ export class Orchestrator {
       const { stdout } = await execFileAsync('git', ['diff', '--cached', '--name-only'], gitOpts);
       if (!stdout.trim()) return; // nothing staged after add (e.g. only .gitignore'd files)
       await execFileAsync('git', ['commit', '-m', `task: ${taskId} (auto-commit by orchestrator)`], gitOpts);
-      console.log(`  [auto-commit] ${taskId} — committed remaining changes`);
+      log.info(`  [auto-commit] ${taskId} — committed remaining changes`);
     } catch {
       // Swallow — e.g. worktree git metadata broken, nothing to commit, etc.
     }
