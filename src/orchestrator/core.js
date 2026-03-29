@@ -576,6 +576,36 @@ export class Orchestrator {
       assigned_to: subagentName,
     });
 
+    // Phase 6 — Gap A: auto-commit parent worktree so child can see uncommitted parent work
+    if (parentTaskId && parentTask?.worktree_branch) {
+      const parentWorktreePath = this.worktreeManager.worktreePath(
+        parentTaskId,
+        parentTask.assigned_to ?? 'unknown'
+      );
+      if (existsSync(parentWorktreePath)) {
+        await execFileAsync('git', ['-C', parentWorktreePath, 'add', '-A']).catch(() => {});
+        await execFileAsync('git', [
+          '-C', parentWorktreePath, 'commit', '--allow-empty', '-m',
+          `chore: auto-snapshot before delegating ${childTask.id} to ${subagentName}`,
+        ]).catch(() => {});
+        log.info(`  [delegate] auto-committed parent worktree ${parentTaskId}`);
+      }
+    }
+
+    // Phase 6 — Gap B: pre-create child worktree and reset it to parent's branch HEAD
+    if (parentTaskId && parentTask?.worktree_branch) {
+      const childWorktreePath = this.worktreeManager.worktreePath(childTask.id, subagentName);
+      if (!existsSync(childWorktreePath)) {
+        await this.worktreeManager.create(childTask.id, subagentName);
+        await execFileAsync('git', [
+          '-C', childWorktreePath, 'reset', '--hard', parentTask.worktree_branch,
+        ]).catch(err => {
+          log.error(`  [delegate] failed to reset child to parent HEAD: ${err.message}`);
+        });
+        log.info(`  [delegate] child worktree ${childTask.id} reset to parent branch ${parentTask.worktree_branch}`);
+      }
+    }
+
     // 5. Reload from DB so assigned_to/worktree_branch are populated, then execute
     const freshChild = await this.taskManager.getTask(childTask.id);
     await this._runTask(freshChild);
@@ -590,19 +620,37 @@ export class Orchestrator {
       duration_ms: 0,
     };
 
-    // 7. Merge-back — persist outcome to SQLite so task_status / audit reads are accurate
+    // 7. Merge-back — Phase 6 Gap C: direct merge for conflict visibility
     const isResearch = ['research', 'analysis', 'docs'].includes(type);
     if (!isResearch && opts.mergeBack !== false && done.status === 'done') {
-      try {
-        await this.acceptTask(childTask.id);
+      const mergeResult = await this.worktreeManager.merge(childTask.id, done.assigned_to ?? subagentName);
+      if (mergeResult.success) {
+        // Clean merge — prune child worktree
+        await this.worktreeManager.prune(childTask.id, done.assigned_to ?? subagentName).catch(() => {});
         resultData.merged = true;
-      } catch (mergeErr) {
+        resultData.conflicts = false;
+      } else if (mergeResult.conflicts) {
+        // Conflict — do NOT prune; leave child worktree so Tech Lead can task_diff(child_id)
         resultData.merged = false;
-        resultData.merge_error = mergeErr.message;
+        resultData.conflicts = true;
+        const conflictFiles = (mergeResult.message ?? '')
+          .split('\n')
+          .filter(l => l.includes('CONFLICT'))
+          .map(l => {
+            // "CONFLICT (content): Merge conflict in path/to/file.js"
+            const m = l.match(/CONFLICT[^:]+:\s*(?:Merge conflict in\s+)?(.+)$/);
+            return m ? m[1].trim() : null;
+          })
+          .filter(Boolean);
+        resultData.conflicting_files = conflictFiles.length > 0 ? conflictFiles : [];
+        log.error(`  [delegate] merge conflict for ${childTask.id}: ${conflictFiles.length} files`);
+      } else {
+        // Merge failed for non-conflict reason
+        resultData.merged = false;
+        resultData.merge_error = mergeResult.message;
       }
-      // Persist merged/merge_error back to SQLite without going through the state machine.
-      // updateStatus() would throw "done → done" — this is a data-only patch on a
-      // completed task, not a transition, so write result_data directly.
+      // Persist merge outcome back to SQLite without going through the state machine.
+      // updateStatus() would throw "done → done" — this is a data-only patch.
       this.taskManager.db.prepare('UPDATE tasks SET result_data = ? WHERE id = ?')
         .run(JSON.stringify(resultData), childTask.id);
     }

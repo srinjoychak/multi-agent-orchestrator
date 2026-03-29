@@ -497,6 +497,18 @@ export class TaskManager {
       .map(r => this._deserialise(r));
   }
 
+  /**
+   * Return all tasks with the given subagent_name (logical delegation role).
+   * @param {string} subagentName
+   * @returns {Promise<Object[]>}
+   */
+  async getTasksBySubagent(subagentName) {
+    return this.db
+      .prepare('SELECT * FROM tasks WHERE subagent_name = ? ORDER BY created_at')
+      .all(subagentName)
+      .map(r => this._deserialise(r));
+  }
+
   /** Reset stale claims (claimed > 10 min ago) back to pending. */
   async resetStaleClaims() {
     this.db.prepare(`
