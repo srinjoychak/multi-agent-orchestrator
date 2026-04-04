@@ -1,0 +1,25 @@
+FROM node:22-slim
+
+# git: worktree operations  |  docker-cli: spawn worker containers via host socket
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git \
+      docker.io \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pre-configure git identity for any commits the orchestrator makes
+RUN git config --global user.name "vn-squad-orchestrator" && \
+    git config --global user.email "orchestrator@localhost" && \
+    git config --global safe.directory '*'
+
+WORKDIR /app
+
+# Install dependencies first (layer cache — only re-runs when package.json changes)
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+# Copy source and config
+COPY src/   ./src/
+COPY agents.json ./
+
+# Stdio transport: no port exposed — MCP client owns the pipe
+ENTRYPOINT ["node", "src/mcp-server/index.js"]

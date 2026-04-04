@@ -2,22 +2,20 @@
 /**
  * Orchestrator MCP Server — entry point.
  *
- * Runs as a persistent daemon. Registers with Docker MCP Toolkit or
- * any MCP client (Claude Code, Gemini CLI) via stdio transport.
+ * Supports two deployment modes:
  *
- * Usage:
- *   node src/mcp-server/index.js
+ *   1. Direct (per-session, stdio):
+ *      node src/mcp-server/index.js
+ *      Registration in ~/.claude/settings.json, ~/.gemini/settings.json, etc.
  *
- * Registration in Claude Code (~/.claude/settings.json):
- *   {
- *     "mcpServers": {
- *       "orchestrator": {
- *         "command": "node",
- *         "args": ["/mnt/d/ALL_AUTOMATION/copilot_adapter/src/mcp-server/index.js"],
- *         "env": { "PROJECT_ROOT": "/mnt/d/ALL_AUTOMATION/copilot_adapter" }
- *       }
- *     }
- *   }
+ *   2. Docker MCP Toolkit (shared, all clients, all projects):
+ *      docker mcp gateway run --profile vn-squad
+ *      One registration in each client config pointing to the gateway.
+ *      project_root passed per-call via orchestrate()/delegate() args.
+ *
+ * Multi-project: an orchestrator pool (Map<projectRoot, Orchestrator>) lazily
+ * creates one Orchestrator per project root on first use. Each tool call that
+ * accepts project_root resolves to the correct orchestrator automatically.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -29,48 +27,44 @@ import {
 import { Orchestrator } from '../orchestrator/core.js';
 import { DockerRunner } from '../docker/runner.js';
 import { TOOLS, handleTool } from './tools.js';
-import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-const PROJECT_ROOT = process.env.PROJECT_ROOT ?? process.cwd();
+// Default project root — used when no project_root is supplied in a tool call.
+// When spawned by an MCP client from inside a project dir, cwd == that project.
+const DEFAULT_PROJECT_ROOT = process.env.PROJECT_ROOT ?? process.cwd();
 
-// ─── Single-instance guard ────────────────────────────────────────────────────
-// Use ~/.local/share — stable across WSL2 reboots unlike /tmp which is wiped.
+// State dir lives on ext4 (survives WSL2 reboots; SQLite WAL locking works).
 const STATE_DIR = join(homedir(), '.local', 'share', 'multi-agent-orchestrator-v3');
-const PID_FILE  = join(STATE_DIR, 'mcp-server.pid');
-
 mkdirSync(STATE_DIR, { recursive: true });
 
-if (existsSync(PID_FILE)) {
-  const existingPid = parseInt(readFileSync(PID_FILE, 'utf8').trim(), 10);
-  try {
-    process.kill(existingPid, 0);
-    console.error(`[mcp-server] Already running (pid ${existingPid}). Exiting.`);
-    process.exit(1);
-  } catch {
-    console.error(`[mcp-server] Stale PID file (pid ${existingPid}). Overwriting.`);
-  }
-}
-writeFileSync(PID_FILE, String(process.pid));
-
-function cleanup() {
-  try { unlinkSync(PID_FILE); } catch { /* already gone */ }
-}
-process.on('SIGTERM', () => { cleanup(); process.exit(0); });
-process.on('SIGINT',  () => { cleanup(); process.exit(0); });
-process.on('exit', cleanup);
-
-// ─── Initialize orchestrator ─────────────────────────────────────────────────
-
-const orchestrator = new Orchestrator(PROJECT_ROOT, { stateDir: STATE_DIR });
 const docker = new DockerRunner({ stateDir: STATE_DIR });
 
-// Initialize in background — tools will wait if called before init completes
-let initPromise = orchestrator.initialize({ quiet: true }).catch(err => {
-  console.error('[mcp-server] Orchestrator init failed:', err.message);
-  process.exit(1);
-});
+// ─── Orchestrator pool ────────────────────────────────────────────────────────
+// One Orchestrator per project root, created lazily on first use.
+// Allows a single containerized MCP server to serve any project on the machine.
+
+/** @type {Map<string, {orchestrator: Orchestrator, ready: Promise<void>}>} */
+const pool = new Map();
+
+function getOrchestrator(projectRoot) {
+  const root = projectRoot ?? DEFAULT_PROJECT_ROOT;
+  if (!pool.has(root)) {
+    const orch = new Orchestrator(root, { stateDir: STATE_DIR });
+    const ready = orch.initialize({ quiet: true }).catch(err => {
+      console.error(`[mcp-server] Orchestrator init failed for ${root}:`, err.message);
+      pool.delete(root); // allow retry on next call
+      throw err;
+    });
+    pool.set(root, { orchestrator: orch, ready });
+    console.error(`[mcp-server] Orchestrator created for ${root}`);
+  }
+  return pool.get(root);
+}
+
+// Eagerly warm up the default project root so the first tool call is fast.
+getOrchestrator(DEFAULT_PROJECT_ROOT);
 
 // ─── MCP Server ───────────────────────────────────────────────────────────────
 
@@ -85,12 +79,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+  const callArgs = args ?? {};
 
-  // Ensure orchestrator is initialized before handling any tool call
-  await initPromise;
+  // Resolve the right orchestrator for this call's project root.
+  const { orchestrator, ready } = getOrchestrator(callArgs.project_root);
+  await ready;
 
   try {
-    const result = await handleTool(name, args ?? {}, orchestrator, docker);
+    const result = await handleTool(name, callArgs, orchestrator, docker);
     return {
       content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
     };
@@ -107,4 +103,4 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-console.error('[mcp-server] Orchestrator MCP server running on stdio');
+console.error(`[mcp-server] VN-Squad MCP server running (default project: ${DEFAULT_PROJECT_ROOT})`);

@@ -1035,9 +1035,23 @@ export class Orchestrator {
   }
 
   async _loadAgentsJson() {
-    const path = join(this.projectRoot, 'agents.json');
-    if (!existsSync(path)) return {};
-    try { return JSON.parse(await readFile(path, 'utf-8')); } catch { return {}; }
+    // Search order:
+    //   1. <projectRoot>/agents.json  — project-level overrides (preferred)
+    //   2. <vn-squad-install>/agents.json — bundled defaults (works when running
+    //      containerised and the project root is a foreign repo with no agents.json)
+    const { dirname: _dir } = await import('node:path');
+    const { fileURLToPath: _fup } = await import('node:url');
+    const installRoot = _dir(_dir(_dir(_fup(import.meta.url)))); // src/orchestrator/core.js → repo root
+    const candidates = [
+      join(this.projectRoot, 'agents.json'),
+      join(installRoot, 'agents.json'),
+    ];
+    for (const p of candidates) {
+      if (existsSync(p)) {
+        try { return JSON.parse(await readFile(p, 'utf-8')); } catch { /* try next */ }
+      }
+    }
+    return {};
   }
 }
 

@@ -18,6 +18,10 @@ export const TOOLS = [
           type: 'string',
           description: 'The software engineering request to orchestrate',
         },
+        project_root: {
+          type: 'string',
+          description: 'Absolute path to the project to operate on (e.g. /home/user/my-app). Defaults to PROJECT_ROOT env var or cwd. Required when using the shared Docker MCP Toolkit deployment.',
+        },
       },
       required: ['prompt'],
     },
@@ -143,6 +147,10 @@ export const TOOLS = [
         parent_task_id: {
           type: 'string',
           description: 'ID of the parent task that is delegating (optional). Used for delegation depth tracking.',
+        },
+        project_root: {
+          type: 'string',
+          description: 'Absolute path to the project to operate on. Defaults to PROJECT_ROOT env var or cwd.',
         },
       },
       required: ['subagent_name', 'prompt'],

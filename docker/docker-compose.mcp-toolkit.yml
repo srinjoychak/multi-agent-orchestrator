@@ -1,0 +1,61 @@
+# VN-Squad MCP Server — Docker run reference
+#
+# This file documents the docker run command that registers VN-Squad as a
+# shared MCP server for ALL AI clients (Claude, Gemini, Codex, VS Code, …).
+#
+# The Docker MCP Toolkit catalog system is NOT used — clients register the
+# image directly via "docker run" in their mcpServers config. This is simpler,
+# requires no Docker Desktop catalog UI, and works identically for all clients.
+#
+# ─── One-time build (from repo root) ─────────────────────────────────────────
+#
+#   npm run build:mcp-server
+#   # → builds vn-squad-mcp:latest
+#
+# ─── Registration block — add to EACH client's settings (once per client) ────
+#
+#   Claude Code  : ~/.claude/settings.json   (key: mcpServers)
+#   Gemini CLI   : ~/.gemini/settings.json   (key: mcpServers)
+#   Codex        : ~/.codex/config.json      (key: mcpServers)
+#   VS Code      : settings.json → github.copilot.chat.mcp.servers
+#
+#   "vn-squad": {
+#     "command": "docker",
+#     "args": [
+#       "run", "--rm", "-i",
+#       "-v", "/var/run/docker.sock:/var/run/docker.sock",
+#       "-v", "/mnt:/mnt",
+#       "-v", "/home/srinjcha/.local/share:/root/.local/share",
+#       "-v", "/home/srinjcha/.gemini:/root/.gemini",
+#       "-v", "/home/srinjcha/.claude:/root/.claude:ro",
+#       "-v", "/home/srinjcha/.codex:/root/.codex",
+#       "-v", "/mnt/d/ALL_AUTOMATION/copilot_adapter/agents.json:/app/agents.json:ro",
+#       "-e", "HOME=/root",
+#       "vn-squad-mcp:latest"
+#     ]
+#   }
+#
+# ─── Per-call project targeting ───────────────────────────────────────────────
+#
+#   orchestrate(
+#     prompt: "Build a REST API with auth",
+#     project_root: "/mnt/d/ALL_AUTOMATION/Lokkhi-ai"
+#   )
+#
+#   If project_root is omitted, the server defaults to cwd (set by the client).
+#
+# ─── Why these mounts ─────────────────────────────────────────────────────────
+#
+#   /var/run/docker.sock  → lets the MCP server spawn worker containers
+#   /mnt                  → all Windows drives (your projects live here on WSL2)
+#   ~/.local/share        → SQLite state dir (must be ext4, not DrvFs)
+#   ~/.gemini             → Gemini CLI auth credentials (rw — session state)
+#   ~/.claude             → Claude Code credentials (ro — read-only is enough)
+#   ~/.codex              → Codex auth credentials (rw — session state)
+#   agents.json           → hot-reloadable quota/concurrency config
+#
+# ─── Rebuilding ───────────────────────────────────────────────────────────────
+#
+#   Only needed when src/ or agents.json changes in VN-Squad itself.
+#   Worker images (worker-gemini, worker-claude, worker-codex) are separate —
+#   rebuild them with: npm run build:workers
