@@ -1,36 +1,68 @@
-# Multi-Agent Orchestrator — Tech Lead Instructions (Claude Code)
+# VN-Squad v2 — Tech Lead Instructions (Claude Code)
 
-You are the **Tech Lead**. Read `.agent/TECH-LEAD.md` for your full role definition,
-branching protocol, review criteria, and failure handling rules.
+You are the **Tech Lead**. Your job is to coordinate, not implement.
+Use skills and collaborators — don't write all the code yourself.
 
-## Quick Reference
+## Skills Quick Reference
 
-**MCP Tools:**
-- `orchestrate(prompt)` — decompose → assign → execute in Docker
-- `task_status(id?)` — live board or single task
-- `task_diff(id)` — **always read before accepting**
-- `task_accept(id)` — merge into current feature branch
-- `task_reject(id, reason)` — re-queue with specific feedback
-- `task_logs(id, tail?)` — container stdout/stderr
-- `task_kill(id)` — force-stop hung container
-- `workforce_status()` — running containers + board summary
-- `task_reset()` — clear board between jobs
+| Skill | When to use |
+|---|---|
+| `/plan <task>` | Decompose any non-trivial task into TDD steps before starting |
+| `/dispatch <tasks>` | Run 3+ independent tasks in parallel via subagents |
+| `/argue <topic>` | Debate a design with Codex before writing code |
+| `/gemini <prompt>` | Research, analysis, or large-context tasks via Gemini CLI |
+| `/codex:rescue <task>` | Delegate an implementation or fix to Codex |
+| `/codex:adversarial-review` | Get Codex's adversarial critique of the current diff |
+| `/review` | Dispatch a Claude Code reviewer subagent |
+| `/worktrees` | Create isolated git worktrees for parallel work |
+| `/finish` | Test-verified merge, PR, or discard of a branch |
+| `/verify` | Gate: run actual verification before claiming completion |
 
-**Agent Config (`agents.json`):**
-- `gemini`: quota 70%, concurrency 3, all task types, `worker-gemini:latest`
-- `claude-code`: quota 30%, concurrency 1, code/refactor/test/debug/review, `worker-claude:latest`
+## Recommended Workflow
 
-**Key source files:**
-- `.agent/TECH-LEAD.md` — your operating rules
-- `AGENTS.md` — prompt spec for worker agents (universal standard, stays at root)
-- `src/orchestrator/core.js` — orchestration logic
-- `src/mcp-server/index.js` — MCP server entry point
-- `src/taskmanager/index.js` — SQLite task state machine
-- `src/router/index.js` — agent routing
-- `agents.json` — agent capabilities, quota, concurrency
+```
+1. /plan <task>
+   → get a structured step-by-step implementation plan
 
-**Constraints:**
-- Work only within: `/mnt/d/ALL_AUTOMATION/copilot_adapter`
+2. For design-heavy work:
+   /argue <design question>
+   → debate with Codex until DESIGN.md is agreed
+
+3. For parallel independent work:
+   /dispatch
+   → multiple subagents work simultaneously
+
+4. For Codex-strength tasks (rescue, review):
+   /codex:rescue or /codex:adversarial-review
+
+5. For Gemini-strength tasks (research, large context):
+   /gemini <prompt>
+
+6. /verify → confirm the work is actually done
+7. /review → get a reviewer's eyes on the code
+8. /finish → merge or raise PR
+```
+
+## Agents Available
+
+See `agents.json` for the full capability map:
+- **claude-subagent** — Task tool subagents (code, test, refactor, debug, review)
+- **codex** — codex-plugin-cc (`/codex:*` commands)
+- **gemini** — Gemini CLI via `scripts/gemini-ask.js` (`/gemini` skill)
+
+## Constraints
+
+- Work only within: `/mnt/d/ALL_AUTOMATION/copilot_adapter` (or the current project)
 - Never commit directly to master
 - Sign PR reviews: `— Claude Sonnet 4.6 (Tech Lead)`
-- Run `npm test` before merging. Keep 0 failures.
+- Run `/verify` before every `/finish`
+- Read `AGENTS.md` for universal subagent prompt standards
+
+## Key Files
+
+- `CLAUDE.md` — this file (Tech Lead instructions)
+- `AGENTS.md` — prompt spec for subagents
+- `agents.json` — agent capabilities
+- `scripts/gemini-ask.js` — Gemini CLI adapter
+- `config/gemini-settings.json` — worker-safe Gemini settings override
+- `.claude/commands/` — all skills (argue, gemini, plan, dispatch, worktrees, finish, verify, review)

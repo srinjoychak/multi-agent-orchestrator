@@ -1,29 +1,17 @@
 {
-  "claude-code": {
-    "image": "worker-claude:latest",
-    "concurrency": 1,
-    "capabilities": ["code", "refactor", "test", "debug", "review"],
-    "quota": 20,
-    "timeoutMs": 300000,
-    "tokenBudget": { "maxInputPerTask": 50000, "maxOutputPerTask": 16000 },
-    "auth": { "mountFrom": "~/.claude", "mountTo": "/home/node/.claude", "mode": "ro" }
-  },
-  "gemini": {
-    "image": "worker-gemini:latest",
-    "concurrency": 3,
-    "capabilities": ["research", "docs", "analysis", "code", "test", "refactor", "debug", "review"],
-    "quota": 70,
-    "timeoutMs": 300000,
-    "tokenBudget": { "maxInputPerTask": 100000, "maxOutputPerTask": 32000 },
-    "auth": { "mountFrom": "~/.gemini", "mountTo": "/home/node/.gemini", "mode": "rw" }
+  "claude-subagent": {
+    "description": "Claude Code subagent — dispatched via Task tool within the session",
+    "capabilities": ["code", "refactor", "test", "debug", "review", "research", "docs", "analysis"],
+    "notes": "Use /dispatch skill to send independent tasks to parallel subagents"
   },
   "codex": {
-    "image": "worker-codex:latest",
-    "concurrency": 2,
-    "capabilities": ["research", "docs", "analysis", "code", "test", "refactor", "debug", "review"],
-    "quota": 10,
-    "timeoutMs": 300000,
-    "tokenBudget": { "maxInputPerTask": 100000, "maxOutputPerTask": 32000 },
-    "auth": { "mountFrom": "~/.codex", "mountTo": "/home/node/.codex", "mode": "rw" }
+    "description": "Codex via codex-plugin-cc — /codex:rescue, /codex:adversarial-review, /codex:review",
+    "capabilities": ["review", "research", "debug", "rescue", "adversarial-review"],
+    "notes": "Requires codex-plugin-cc installed. One active request at a time (JSON-RPC broker queues)."
+  },
+  "gemini": {
+    "description": "Gemini CLI via scripts/gemini-ask.js — direct subprocess, no Docker",
+    "capabilities": ["research", "analysis", "docs", "planning"],
+    "notes": "Requires: npm install -g @google/gemini-cli && gemini auth. Use /gemini skill."
   }
 }
