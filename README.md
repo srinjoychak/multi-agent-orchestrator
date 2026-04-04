@@ -38,7 +38,7 @@ All skills live in `.claude/commands/` and are invoked as slash commands in Clau
 | Skill | What it does |
 |---|---|
 | `/argue <topic>` | Claude proposes a design in `DESIGN.md` → Codex challenges it → Claude refines → repeat until consensus (max 4 rounds) |
-| `/gemini <prompt> [--model flash\|pro]` | Research, analysis, or large-context tasks via Gemini CLI |
+| `/gemini <prompt> [--model flash\|pro\|pro-exp]` | Research, analysis, or large-context tasks via Gemini CLI |
 
 ### From [skills.sh](https://skills.sh) — obra/superpowers
 
