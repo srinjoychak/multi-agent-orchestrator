@@ -1,25 +1,38 @@
 {
   "claude-subagent": {
-    "description": "Claude Code subagent — dispatched via Task tool within the session",
-    "capabilities": ["code", "refactor", "test", "debug", "review", "research", "docs", "analysis"],
+    "description": "Native Claude Code subagent — spawned via Agent tool within the session",
+    "subagent_definition": "built-in (general-purpose)",
     "dispatch_annotation": "[claude]",
-    "model_selection": "Use /model opus|sonnet|haiku in Claude Code session before dispatching. All subagents inherit the session model — there is no per-subagent model override via the Task tool.",
-    "routing_preference": ["code", "refactor", "test", "debug"]
+    "model_selection": "Inherits the session model. Change with /model opus|sonnet|haiku in Claude Code before dispatching.",
+    "isolation": "none by default — runs in main worktree",
+    "capabilities": ["code", "refactor", "test", "debug", "review", "research", "docs", "analysis"]
   },
-  "codex": {
-    "description": "Codex via codex-plugin-cc — /codex:rescue, /codex:adversarial-review, /codex:review",
-    "capabilities": ["review", "research", "debug", "rescue", "adversarial-review"],
-    "dispatch_annotation": "[codex]",
-    "model_selection": "Append --model <model> to the task annotation, e.g. [codex --model gpt-5.4-mini]. Passed to codex-companion.mjs.",
-    "concurrency": 1,
-    "concurrency_note": "JSON-RPC broker queues requests — only one active at a time",
-    "routing_preference": ["review", "adversarial-review", "rescue"]
-  },
-  "gemini": {
-    "description": "Gemini CLI via scripts/gemini-ask.js — direct subprocess, no Docker",
-    "capabilities": ["research", "analysis", "docs", "planning"],
+  "gemini-worker": {
+    "description": "Gemini CLI via gemini-worker subagent (.claude/agents/gemini-worker.md)",
+    "subagent_definition": ".claude/agents/gemini-worker.md",
     "dispatch_annotation": "[gemini]",
-    "model_selection": "Append --model flash|pro|pro-exp to the task annotation, e.g. [gemini --model pro]. Passed to gemini-ask.js --model flag.",
-    "routing_preference": ["research", "analysis", "docs", "planning"]
+    "model_selection": "[gemini --model flash|pro|pro-exp] — passed to scripts/gemini-ask.js",
+    "isolation": "worktree per task (isolation: worktree in agent definition)",
+    "wrapper_model": "haiku (lightweight wrapper — cost-effective)",
+    "capabilities": ["code", "refactor", "test", "debug", "review", "research", "docs", "analysis", "large-context"]
+  },
+  "codex-worker": {
+    "description": "Codex via codex-worker subagent (.claude/agents/codex-worker.md)",
+    "subagent_definition": ".claude/agents/codex-worker.md",
+    "dispatch_annotation": "[codex]",
+    "model_selection": "[codex --model gpt-5.4-mini|gpt-5.3-codex-spark] — passed to codex-plugin-cc",
+    "isolation": "worktree per task (isolation: worktree in agent definition)",
+    "wrapper_model": "haiku (lightweight wrapper — cost-effective)",
+    "concurrency": 1,
+    "concurrency_note": "JSON-RPC broker queues — one active Codex request at a time",
+    "capabilities": ["code", "refactor", "test", "debug", "review", "rescue", "adversarial-review"]
+  },
+  "vn-reviewer": {
+    "description": "Dedicated code reviewer subagent (.claude/agents/vn-reviewer.md)",
+    "subagent_definition": ".claude/agents/vn-reviewer.md",
+    "model": "sonnet",
+    "tools": "Read, Glob, Grep, Bash (read-only mode)",
+    "memory": "project — accumulates codebase knowledge across sessions",
+    "capabilities": ["review"]
   }
 }

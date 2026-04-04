@@ -63,31 +63,33 @@ All skills live in `.claude/commands/` and are invoked as slash commands in Clau
 
 ## Agents
 
-Three collaborators, no containers:
+Four collaborators, implemented as native Claude Code sub-agents:
 
-| Agent | How | Best for | Model selection |
-|---|---|---|---|
-| **claude-subagent** | Task tool (native Claude Code) | Code, refactor, test, debug, review | Use `/model opus\|sonnet` in CC before dispatching |
-| **codex** | codex-plugin-cc | Adversarial review, rescue, complex fixes | `--model gpt-5.4-mini\|gpt-5.3-codex-spark` |
-| **gemini** | `scripts/gemini-ask.js` subprocess | Research, analysis, large-context docs | `--model flash\|pro\|pro-exp` |
+| Sub-agent | Definition | Any task? | Model flag | Isolation |
+|---|---|---|---|---|
+| **claude-subagent** | built-in | ✅ | `/model opus\|sonnet\|haiku` in CC session | main worktree |
+| **gemini-worker** | `.claude/agents/gemini-worker.md` | ✅ | `[gemini --model flash\|pro\|pro-exp]` | per-task worktree |
+| **codex-worker** | `.claude/agents/codex-worker.md` | ✅ | `[codex --model gpt-5.4-mini\|gpt-5.3-codex-spark]` | per-task worktree |
+| **vn-reviewer** | `.claude/agents/vn-reviewer.md` | read-only | inherits session | main worktree |
+
+**Any agent can do any task.** Gemini writes code. Codex writes tests. Claude does research.
+Route by what you want — not by assumed capability.
 
 ### Agent Routing
 
-There are no hard percentage quotas in v2 (unlike v1's Gemini 70% / Claude 30% split).
-Routing is **capability-based**: the right agent for the right task type.
-
-Use annotations in `/dispatch` to route tasks explicitly:
+No percentage quotas. No hardcoded task-type defaults. Routing is entirely by **your explicit annotation** in `/dispatch`.
 
 ```
-[gemini]  research the Node.js fetch API and document the options
-[claude]  implement fetch-data.js using the researched API
-[codex]   review fetch-data.js for security issues
+[gemini --model pro]   write the authentication module      ← coding task → Gemini
+[claude]               write tests for the auth module      ← testing task → Claude  
+[codex]                implement the rate limiter           ← coding task → Codex
+[gemini --model flash] write the API documentation         ← docs task → Gemini
 ```
 
-Default routing (when no annotation is given):
-- `research / docs / analysis` → gemini
-- `code / refactor / test / debug` → claude-subagent
-- `review / rescue` → codex or claude-subagent
+All four tasks run in parallel. `gemini-worker` and `codex-worker` each get their own
+isolated git worktree (via `isolation: worktree` in their sub-agent definition).
+
+No annotation = Claude (the session default).
 
 ---
 
@@ -281,22 +283,26 @@ node scripts/gemini-ask.js "what is 2+2" --model pro
 ```
 vn-squad/
 ├── .claude/
-│   └── commands/              ← All slash command skills
-│       ├── argue.md            ← /argue   (custom — design debate loop)
-│       ├── gemini.md           ← /gemini  (custom — Gemini CLI adapter)
+│   ├── agents/                 ← Native Claude Code sub-agent definitions
+│   │   ├── gemini-worker.md    ← Gemini CLI wrapper (isolation: worktree, model: haiku)
+│   │   ├── codex-worker.md     ← Codex wrapper (isolation: worktree, model: haiku)
+│   │   └── vn-reviewer.md      ← Read-only code reviewer (model: sonnet, memory: project)
+│   └── commands/               ← Slash command skills
+│       ├── argue.md            ← /argue   (Claude↔Codex design debate)
+│       ├── gemini.md           ← /gemini  (direct Gemini CLI call)
+│       ├── dispatch.md         ← /dispatch (agent routing with annotations)
 │       ├── plan.md             ← /plan    (skills.sh)
-│       ├── dispatch.md         ← /dispatch (skills.sh + agent routing)
 │       ├── worktrees.md        ← /worktrees (skills.sh)
 │       ├── finish.md           ← /finish  (skills.sh)
 │       ├── verify.md           ← /verify  (skills.sh)
 │       └── review.md           ← /review  (skills.sh)
 ├── scripts/
-│   └── gemini-ask.js           ← Gemini CLI adapter (no Docker)
+│   └── gemini-ask.js           ← Gemini CLI adapter (used by gemini-worker)
 ├── config/
 │   └── gemini-settings.json    ← Worker-safe Gemini config
 ├── CLAUDE.md                   ← Tech Lead instructions
 ├── AGENTS.md                   ← Subagent prompt standard
-└── agents.json                 ← Agent capabilities + routing map
+└── agents.json                 ← Agent capabilities + sub-agent map
 ```
 
 ---
