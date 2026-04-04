@@ -38,14 +38,14 @@ All skills live in `.claude/commands/` and are invoked as slash commands in Clau
 | Skill | What it does |
 |---|---|
 | `/argue <topic>` | Claude proposes a design in `DESIGN.md` → Codex challenges it → Claude refines → repeat until consensus (max 4 rounds) |
-| `/gemini <prompt>` | Research, analysis, or large-context tasks via Gemini CLI (no Docker) |
+| `/gemini <prompt> [--model flash\|pro]` | Research, analysis, or large-context tasks via Gemini CLI |
 
 ### From [skills.sh](https://skills.sh) — obra/superpowers
 
 | Skill | What it does |
 |---|---|
 | `/plan <task>` | Decompose into TDD bite-sized steps with exact file paths and code samples |
-| `/dispatch <tasks>` | Dispatch 3+ independent tasks to parallel Claude subagents |
+| `/dispatch <tasks>` | Dispatch independent tasks to parallel agents — supports agent routing annotations |
 | `/worktrees` | Create isolated git worktrees with safety checks and baseline tests |
 | `/finish` | Test-verified branch completion: merge locally, create PR, or discard |
 | `/verify` | Gate: run actual verification before claiming anything is complete |
@@ -55,7 +55,7 @@ All skills live in `.claude/commands/` and are invoked as slash commands in Clau
 
 | Command | What it does |
 |---|---|
-| `/codex:rescue <task>` | Delegate an implementation or fix to Codex |
+| `/codex:rescue <task> [--model <model>]` | Delegate an implementation or fix to Codex |
 | `/codex:adversarial-review` | Get Codex's structured adversarial critique of the current diff |
 | `/codex:review` | Standard Codex code review |
 
@@ -65,32 +65,182 @@ All skills live in `.claude/commands/` and are invoked as slash commands in Clau
 
 Three collaborators, no containers:
 
-| Agent | How | Best for |
-|---|---|---|
-| **claude-subagent** | Task tool (native Claude Code) | Code, refactor, test, debug, review |
-| **codex** | codex-plugin-cc | Adversarial review, rescue, complex fixes |
-| **gemini** | `scripts/gemini-ask.js` subprocess | Research, analysis, large-context docs |
+| Agent | How | Best for | Model selection |
+|---|---|---|---|
+| **claude-subagent** | Task tool (native Claude Code) | Code, refactor, test, debug, review | Use `/model opus\|sonnet` in CC before dispatching |
+| **codex** | codex-plugin-cc | Adversarial review, rescue, complex fixes | `--model gpt-5.4-mini\|gpt-5.3-codex-spark` |
+| **gemini** | `scripts/gemini-ask.js` subprocess | Research, analysis, large-context docs | `--model flash\|pro\|pro-exp` |
+
+### Agent Routing
+
+There are no hard percentage quotas in v2 (unlike v1's Gemini 70% / Claude 30% split).
+Routing is **capability-based**: the right agent for the right task type.
+
+Use annotations in `/dispatch` to route tasks explicitly:
+
+```
+[gemini]  research the Node.js fetch API and document the options
+[claude]  implement fetch-data.js using the researched API
+[codex]   review fetch-data.js for security issues
+```
+
+Default routing (when no annotation is given):
+- `research / docs / analysis` → gemini
+- `code / refactor / test / debug` → claude-subagent
+- `review / rescue` → codex or claude-subagent
+
+---
+
+## Usage Examples
+
+### Example 1 — Design debate before coding
+
+```
+You: /argue should we use ESM or CJS for this Node.js project?
+```
+
+What happens:
+1. Claude writes `DESIGN.md` with its position (ESM recommended, rationale)
+2. Commits `DESIGN.md`
+3. Codex reviews it adversarially — finds: "CJS still required for Jest without config"
+4. Claude refines — updates DESIGN.md to address the finding
+5. Codex approves on round 2 (verdict: APPROVE, confidence: 0.88)
+
+Result: `DESIGN.md` committed with agreed-upon approach. Both AIs signed off.
+
+```
+You: /codex:rescue implement the module system per DESIGN.md
+```
+
+---
+
+### Example 2 — Research then build
+
+```
+You: /gemini --model pro what are the tradeoffs of Drizzle ORM vs Prisma for a SQLite project?
+```
+
+Gemini returns a structured comparison (large context, free tier).
+
+```
+You: /argue based on the Gemini research, should we use Drizzle or Prisma?
+```
+
+Claude takes a position. Codex stress-tests it. Consensus in 2 rounds.
+
+```
+You: /plan implement the chosen ORM with migrations and a users table
+```
+
+Returns 4 tasks with TDD steps and exact file paths.
+
+```
+You: /dispatch
+  [claude] Task 1: write the schema and migration
+  [claude] Task 2: write the repository layer
+```
+
+Two Claude subagents work in parallel.
+
+---
+
+### Example 3 — Parallel independent fixes
+
+```
+You: /dispatch
+  [claude] fix the type error in src/auth/token.js line 42
+  [claude] add missing error handling in src/api/users.js
+  [gemini] write JSDoc for all exported functions in src/utils/
+```
+
+Three agents work simultaneously. Each commits its own changes independently.
+
+---
+
+### Example 4 — Gemini with model selection
+
+```
+You: /gemini --model flash "summarize the last 50 git commits"
+# fast + cheap for simple summarization
+
+You: /gemini --model pro "analyze the security implications of the auth middleware"
+# more capable model for security analysis
+```
+
+---
+
+### Example 5 — Codex with model selection
+
+```
+You: /codex:rescue --model gpt-5.4-mini fix the failing unit test in auth.test.js
+# lighter model for a targeted fix
+
+You: /codex:rescue --model gpt-5.3-codex-spark refactor the entire payment module
+# more capable model for complex refactoring
+```
+
+---
+
+### Example 6 — Claude model selection for heavy tasks
+
+Change the Claude Code session model before dispatching:
+
+```
+/model opus          ← switch Tech Lead + all subagents to Opus
+
+/dispatch
+  [claude] redesign the entire authentication architecture
+  [claude] write a comprehensive test suite for the new design
+
+/model sonnet        ← switch back after heavy work
+```
+
+> **Note:** The Claude Code Task tool always uses the current session model.
+> All `[claude]` subagents inherit whatever model you've set. There's no per-subagent
+> model override without switching to subprocess mode.
+
+---
+
+### Example 7 — Full workflow end-to-end
+
+```
+/plan add rate limiting to the Express API
+
+→ /argue should we use in-memory rate limiting or Redis?
+  (3 rounds, DESIGN.md: in-memory for now, Redis interface for later)
+
+→ /dispatch
+    [claude] implement the rate limiter middleware per DESIGN.md
+    [claude] write integration tests for the rate limiter
+    [gemini] update the API documentation with rate limit headers
+
+→ /verify
+→ /review
+→ /finish  (creates PR)
+```
+
+---
+
+## Model Selection Reference
+
+| Agent | Flag | Options | Default |
+|---|---|---|---|
+| Gemini | `--model` | `flash`, `pro`, `pro-exp` | `flash` |
+| Codex | `--model` | `gpt-5.4-mini`, `gpt-5.3-codex-spark`, others | provider default |
+| Claude subagents | `/model` (CC command) | `opus`, `sonnet`, `haiku` | session model |
 
 ---
 
 ## Recommended Workflow
 
 ```
-1. /plan <feature>
-   → structured implementation steps
-
-2. /argue <design question>   ← if design is unclear
-   → DESIGN.md agreed by both Claude and Codex
-
-3. /dispatch                  ← for parallel independent tasks
-   → multiple subagents work simultaneously
-
-4. /codex:rescue <task>       ← for Codex-strength work
-   /gemini <prompt>           ← for research/analysis
-
-5. /verify                    ← before claiming anything is done
-6. /review                    ← reviewer subagent eyes on the code
-7. /finish                    ← merge or PR
+1. /plan <feature>            → structured TDD implementation steps
+2. /argue <design question>   → agree on design before writing code
+3. /dispatch [agent] tasks    → parallel agents, routed by capability
+4. /codex:rescue or /gemini   → targeted Codex/Gemini work
+5. /verify                    → evidence gate before claiming done
+6. /review                    → reviewer subagent
+7. /finish                    → merge or PR
 ```
 
 ---
@@ -101,7 +251,7 @@ Three collaborators, no containers:
 
 - **Claude Code** — installed and authenticated (the Tech Lead)
 - **codex-plugin-cc** — for `/codex:*` commands ([openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc))
-- **Gemini CLI** (optional, for `/gemini`) — `npm install -g @google/gemini-cli` then `gemini auth`
+- **Gemini CLI** (optional) — `npm install -g @google/gemini-cli` then `gemini auth`
 
 ### Install
 
@@ -111,10 +261,17 @@ cd vn-squad
 # No npm install needed — zero runtime dependencies
 ```
 
-### Test Gemini adapter
+### Verify setup
 
 ```bash
+# Test Gemini adapter
 node scripts/gemini-ask.js "what is 2+2"
+
+# Test model flag
+node scripts/gemini-ask.js "what is 2+2" --model pro
+
+# Verify codex-plugin-cc
+/codex:setup
 ```
 
 ---
@@ -124,22 +281,22 @@ node scripts/gemini-ask.js "what is 2+2"
 ```
 vn-squad/
 ├── .claude/
-│   └── commands/          ← All slash command skills
-│       ├── argue.md        ← /argue  (custom)
-│       ├── gemini.md       ← /gemini (custom)
-│       ├── plan.md         ← /plan   (skills.sh)
-│       ├── dispatch.md     ← /dispatch (skills.sh)
-│       ├── worktrees.md    ← /worktrees (skills.sh)
-│       ├── finish.md       ← /finish (skills.sh)
-│       ├── verify.md       ← /verify (skills.sh)
-│       └── review.md       ← /review (skills.sh)
+│   └── commands/              ← All slash command skills
+│       ├── argue.md            ← /argue   (custom — design debate loop)
+│       ├── gemini.md           ← /gemini  (custom — Gemini CLI adapter)
+│       ├── plan.md             ← /plan    (skills.sh)
+│       ├── dispatch.md         ← /dispatch (skills.sh + agent routing)
+│       ├── worktrees.md        ← /worktrees (skills.sh)
+│       ├── finish.md           ← /finish  (skills.sh)
+│       ├── verify.md           ← /verify  (skills.sh)
+│       └── review.md           ← /review  (skills.sh)
 ├── scripts/
-│   └── gemini-ask.js       ← Gemini CLI adapter (no Docker)
+│   └── gemini-ask.js           ← Gemini CLI adapter (no Docker)
 ├── config/
-│   └── gemini-settings.json ← Worker-safe Gemini config
-├── CLAUDE.md               ← Tech Lead instructions
-├── AGENTS.md               ← Subagent prompt standard
-└── agents.json             ← Agent capabilities map
+│   └── gemini-settings.json    ← Worker-safe Gemini config
+├── CLAUDE.md                   ← Tech Lead instructions
+├── AGENTS.md                   ← Subagent prompt standard
+└── agents.json                 ← Agent capabilities + routing map
 ```
 
 ---

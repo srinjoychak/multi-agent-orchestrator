@@ -5,24 +5,44 @@ design before any code is written. Iterate until consensus or max rounds.
 
 ## Invocation
 
-`/argue <topic>` — e.g. `/argue should we use ESM or CJS for this project`
+```
+/argue [--codex-model <model>] [--rounds <n>] <topic>
+```
+
+**Examples:**
+```
+/argue should we use ESM or CJS for this Node.js project?
+
+/argue --codex-model gpt-5.4-mini should hello.js use console.log or process.stdout.write?
+
+/argue --rounds 6 --codex-model gpt-5.3-codex-spark redesign the entire authentication module
+```
+
+**Flags:**
+| Flag | Default | Description |
+|---|---|---|
+| `--codex-model` | provider default | Model for `/codex:adversarial-review` (e.g. `gpt-5.4-mini`, `gpt-5.3-codex-spark`) |
+| `--rounds` | 4 | Maximum debate rounds before forcing convergence |
+
+> **Claude's model** is always the current session model — use `/model opus|sonnet` in
+> Claude Code before running `/argue` if you want a more capable Claude position.
 
 ## Workflow
 
-**Announce:** "Starting /argue debate for: $TOPIC"
+**Announce:** "Starting /argue debate (max $ROUNDS rounds): $TOPIC"
 
-### Round loop (max 4 rounds)
+### Round loop
 
 **Step 1 — Draft / Refine design**
 
 If `DESIGN.md` does not exist:
 - Write `DESIGN.md` with Claude's initial position on the topic.
-- Structure it as: Problem Statement → Proposed Approach → Key Tradeoffs → Open Questions.
+- Structure: Problem Statement → Proposed Approach → Key Tradeoffs → Open Questions.
 
 If `DESIGN.md` exists (subsequent rounds):
 - Read the Codex findings from the previous round.
-- For each finding: explicitly DEFEND (explain why the concern is addressed), REVISE (update the design), or CONCEDE (note as unresolved).
-- Update `DESIGN.md` in-place with the refined position.
+- For EACH finding: explicitly DEFEND (explain why concern is addressed), REVISE (update the design), or CONCEDE (note as unresolved).
+- Update `DESIGN.md` in-place. It stays a clean design doc — not a debate transcript.
 
 **Step 2 — Commit**
 
@@ -33,14 +53,16 @@ git commit -m "argue: round $ROUND — $TOPIC"
 
 **Step 3 — Adversarial review**
 
-Run: `/codex:adversarial-review --wait`
+Run: `/codex:adversarial-review --wait [--model $CODEX_MODEL]`
 
-Codex will return structured findings:
+Codex returns structured findings:
 ```json
 {
   "verdict": "APPROVE" | "REVISE" | "REJECT",
   "confidence": 0.0–1.0,
-  "findings": [{ "severity": "critical|major|minor", "description": "..." }]
+  "findings": [
+    { "severity": "critical|major|minor", "description": "..." }
+  ]
 }
 ```
 
@@ -49,7 +71,7 @@ Codex will return structured findings:
 Stop if ANY of:
 - `verdict == "APPROVE"`
 - `confidence >= 0.85`
-- `round >= 4`
+- `round >= $MAX_ROUNDS`
 
 Otherwise increment round and return to Step 1.
 
@@ -58,25 +80,29 @@ Otherwise increment round and return to Step 1.
 When stopping, output:
 
 ```
-## /argue — Debate Complete (Round $ROUND)
+## /argue — Debate Complete (Round $ROUND / $MAX_ROUNDS)
 
-**Verdict:** $VERDICT  
+**Verdict:** $VERDICT
 **Confidence:** $CONFIDENCE
+**Codex model:** $CODEX_MODEL
+**Claude model:** (current session)
 
-**Agreed design:** DESIGN.md (committed)
+**Agreed design:** DESIGN.md (committed to current branch)
 
+**Findings addressed:** $N
 **Unresolved findings** (if any):
-- [list any remaining REVISE/REJECT findings]
+- severity: description
 
 **Next step options:**
-1. `/codex:rescue` — let Codex implement the agreed design
-2. Continue arguing (increase max rounds)
+1. `/codex:rescue [--model <model>]` — Codex implements the agreed design
+2. Continue arguing with `--rounds $((ROUND+2))`
 3. Proceed with Claude implementation
 ```
 
 ## Rules
 
 - Never skip a finding — address every one (defend, revise, or concede).
-- Never implement code during the argue loop — only update DESIGN.md.
-- If Codex is unavailable (codex-plugin-cc not installed), stop and say so clearly.
-- DESIGN.md must remain a clean design document, not a debate transcript.
+- Never write implementation code during argue — only `DESIGN.md`.
+- `DESIGN.md` must remain a clean design document, not a debate transcript.
+- If Codex is unavailable, stop immediately and say so clearly.
+- If `--rounds` is exceeded without APPROVE, present the unresolved findings to the user.

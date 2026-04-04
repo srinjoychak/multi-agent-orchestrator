@@ -5,19 +5,36 @@ Delegate a research, analysis, or planning prompt to Gemini CLI via the lightwei
 
 ## Invocation
 
-`/gemini <prompt>` — e.g. `/gemini explain the tradeoffs of ESM vs CJS in Node.js 22`
+```
+/gemini [--model flash|pro|pro-exp] <prompt>
+```
 
-Flags:
-- `--model flash` (default) or `--model pro`
-- `--work-dir <path>` (defaults to current directory)
+**Examples:**
+```
+/gemini what are the tradeoffs of Drizzle ORM vs Prisma for SQLite?
+
+/gemini --model pro analyze the security implications of the auth middleware
+
+/gemini --model flash summarize the last 50 git commits
+
+/gemini --model pro-exp review the entire src/ directory for architectural issues
+```
+
+## Model Selection
+
+| Model | Speed | Quality | Cost | Best for |
+|---|---|---|---|---|
+| `flash` (default) | Fast | Good | Free tier | Summaries, quick research, docs |
+| `pro` | Medium | Better | Free tier | Security analysis, complex reasoning |
+| `pro-exp` | Slower | Best available | Free tier | Architecture review, large context |
 
 ## Workflow
 
-**Announce:** "Delegating to Gemini: $PROMPT"
+**Announce:** "Delegating to Gemini (`$MODEL`): $PROMPT"
 
 Run:
 ```bash
-node scripts/gemini-ask.js "$PROMPT" [--model $MODEL] [--work-dir $WORK_DIR]
+node scripts/gemini-ask.js "$PROMPT" --model "$MODEL"
 ```
 
 Parse the JSON output:
@@ -26,22 +43,29 @@ Parse the JSON output:
   "summary": "...",
   "model": "gemini-2.0-flash",
   "exitCode": 0,
-  "tokenUsage": { "input": ..., "output": ..., "total": ... }
+  "tokenUsage": { "input": 120, "output": 850, "total": 970 }
 }
 ```
 
-Present `summary` to the user. If `exitCode != 0`, report the error and suggest
-running `gemini --version` to verify the CLI is installed.
+Present `summary` to the user along with `tokenUsage` (for awareness).
 
-## When to use Gemini
+If `exitCode != 0`:
+- Report the error
+- Suggest: `gemini --version` to verify CLI is installed
+- Suggest: `gemini auth` to re-authenticate
 
-- **Research**: Large-context analysis, reading many files at once
-- **Docs**: Writing comprehensive documentation
-- **Planning**: Exploring design alternatives before /argue
+## When to Use Gemini
+
+- **Research**: Compare libraries, explain concepts, survey documentation
+- **Large context**: Analyze many files at once (Gemini has a large context window)
+- **Docs**: Write comprehensive documentation, READMEs, API docs
+- **Planning**: Explore design alternatives before `/argue`
 - **Free-tier tasks**: Tasks where Claude quota is scarce
 
 ## Prerequisites
 
-- `gemini` CLI installed: `npm install -g @google/gemini-cli`
-- Gemini authenticated: `gemini auth` (or `~/.gemini/oauth_creds.json` exists)
-- `scripts/gemini-ask.js` present in the repo root
+```bash
+npm install -g @google/gemini-cli   # install CLI
+gemini auth                          # authenticate
+node scripts/gemini-ask.js "test"    # verify adapter works
+```
