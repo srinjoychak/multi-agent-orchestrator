@@ -1,22 +1,7 @@
 node_modules/
-.agent-team/
 .worktrees/
 *.lock
 .claude/settings.local.json
 
-# Ephemeral task context — written per-run, must never be committed
-TASK_CONTEXT.md
-
-# Agent task coordination files
-*-tasks.md
-GEMINI_TASK_*.md
-GEMINI_TECH_LEAD.md
-*-catalog.yaml
-
-# Task prompt specs — local only, not tracked in remote
-task-prompts/
-subagent-design-implement-v2.md
-productization-roadmap.md
-subagent-design-implement.md
-DESIGN.md
-.agent-team
+# Ephemeral Gemini auth dirs created by gemini-ask.js
+/tmp/gemini-auth-*

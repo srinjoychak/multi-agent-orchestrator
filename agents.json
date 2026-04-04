@@ -1,29 +1,38 @@
 {
-  "claude-code": {
-    "image": "worker-claude:latest",
+  "claude-subagent": {
+    "description": "Native Claude Code subagent — spawned via Agent tool within the session",
+    "subagent_definition": "built-in (general-purpose)",
+    "dispatch_annotation": "[claude]",
+    "model_selection": "Inherits the session model. Change with /model opus|sonnet|haiku in Claude Code before dispatching.",
+    "isolation": "none by default — runs in main worktree",
+    "capabilities": ["code", "refactor", "test", "debug", "review", "research", "docs", "analysis"]
+  },
+  "gemini-worker": {
+    "description": "Gemini CLI via gemini-worker subagent (.claude/agents/gemini-worker.md)",
+    "subagent_definition": ".claude/agents/gemini-worker.md",
+    "dispatch_annotation": "[gemini]",
+    "model_selection": "[gemini --model flash|pro|pro-exp] — passed to scripts/gemini-ask.js",
+    "isolation": "worktree per task (isolation: worktree in agent definition)",
+    "wrapper_model": "haiku (lightweight wrapper — cost-effective)",
+    "capabilities": ["code", "refactor", "test", "debug", "review", "research", "docs", "analysis", "large-context"]
+  },
+  "codex-worker": {
+    "description": "Codex via codex-worker subagent (.claude/agents/codex-worker.md)",
+    "subagent_definition": ".claude/agents/codex-worker.md",
+    "dispatch_annotation": "[codex]",
+    "model_selection": "[codex --model gpt-5.4-mini|gpt-5.3-codex-spark] — passed to codex-plugin-cc",
+    "isolation": "worktree per task (isolation: worktree in agent definition)",
+    "wrapper_model": "haiku (lightweight wrapper — cost-effective)",
     "concurrency": 1,
-    "capabilities": ["code", "refactor", "test", "debug", "review"],
-    "quota": 20,
-    "timeoutMs": 300000,
-    "tokenBudget": { "maxInputPerTask": 50000, "maxOutputPerTask": 16000 },
-    "auth": { "mountFrom": "~/.claude", "mountTo": "/home/node/.claude", "mode": "ro" }
+    "concurrency_note": "JSON-RPC broker queues — one active Codex request at a time",
+    "capabilities": ["code", "refactor", "test", "debug", "review", "rescue", "adversarial-review"]
   },
-  "gemini": {
-    "image": "worker-gemini:latest",
-    "concurrency": 3,
-    "capabilities": ["research", "docs", "analysis", "code", "test", "refactor", "debug", "review"],
-    "quota": 70,
-    "timeoutMs": 300000,
-    "tokenBudget": { "maxInputPerTask": 100000, "maxOutputPerTask": 32000 },
-    "auth": { "mountFrom": "~/.gemini", "mountTo": "/home/node/.gemini", "mode": "rw" }
-  },
-  "codex": {
-    "image": "worker-codex:latest",
-    "concurrency": 2,
-    "capabilities": ["research", "docs", "analysis", "code", "test", "refactor", "debug", "review"],
-    "quota": 10,
-    "timeoutMs": 300000,
-    "tokenBudget": { "maxInputPerTask": 100000, "maxOutputPerTask": 32000 },
-    "auth": { "mountFrom": "~/.codex", "mountTo": "/home/node/.codex", "mode": "rw" }
+  "vn-reviewer": {
+    "description": "Dedicated code reviewer subagent (.claude/agents/vn-reviewer.md)",
+    "subagent_definition": ".claude/agents/vn-reviewer.md",
+    "model": "sonnet",
+    "tools": "Read, Glob, Grep, Bash (read-only mode)",
+    "memory": "project — accumulates codebase knowledge across sessions",
+    "capabilities": ["review"]
   }
 }
