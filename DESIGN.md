@@ -25,24 +25,52 @@ form, and in what priority order.
 **What:** After a dispatched agent returns, classify the failure type from its output and
 auto-route to the correct recovery path — without requiring Tech Lead intervention.
 
-**Form in VN-Squad v2 (revised — dual-signal classification):**
+**Form in VN-Squad v2 (revised — tiered-trust classification):**
 
-Failure classification is driven by **external evidence first**, with the agent's
-self-reported `AGENT_RESULT` block used as advisory context only — never as the sole
-authority. The Tech Lead always cross-checks against independent signals before routing.
+Failure classification uses a **tiered trust model** that acknowledges a fundamental
+architectural constraint: in VN-Squad, the Tech Lead receives agent output only through
+the Claude Code Task tool's return value. There is no separate subprocess runner the Tech
+Lead can intercept for raw exit codes or build logs. The agent IS the runner.
 
-**External signals (authoritative — checked first):**
+Given this constraint, classification uses three tiers of evidence, ordered by reliability:
 
-| External signal | What to check | How to check |
+**Tier 1 — Fully independent (highest trust):**
+
+| Signal | How checked | Trust level |
 |---|---|---|
-| Files changed | `git diff --stat <worktree-branch>` | 0 files = EmptyDiff candidate |
-| Test exit code | Embedded in agent summary (`exit: N`) | Non-zero = TestFail candidate |
-| Build output | Agent summary contains compiler errors | Pattern match on "error:", "SyntaxError" |
-| Completion | Agent summary length and structure | Empty/truncated = ProviderFailure |
+| Files changed | `git diff --stat <worktree-branch>` run by Tech Lead directly | Fully independent — agent cannot influence |
+| Summary presence | Is the agent return value non-empty? | Independent |
 
-**Agent `AGENT_RESULT` block (advisory — checked second):**
+**Tier 2 — Agent-authored but structurally verifiable:**
 
-Agents are still required to emit:
+| Signal | How checked | Trust level |
+|---|---|---|
+| `AGENT_RESULT.files_changed` | Cross-check against Tier 1 git diff count | Low — accept only if matches Tier 1 |
+| `AGENT_RESULT.failure_code` | Used only when Tier 1 agrees | Advisory |
+
+**Tier 3 — Agent-authored, unverifiable (lowest trust):**
+
+| Signal | How checked | Trust level |
+|---|---|---|
+| Exit code in summary text | Agent writes `exit: N` in prose | Unverifiable — agent-controlled |
+| Error patterns in summary | Pattern match on "error:", "SyntaxError" | Unverifiable — agent-controlled |
+
+**Classification rules:**
+
+- `EmptyDiff`: Tier 1 git diff returns 0 files. Fully independent. Auto-recovery, no approval.
+- `ProviderFailure`: Agent summary is empty/truncated (Tier 1 presence check). Auto-fallback, no approval.
+- `StaleBranch`: Tier 1 merge-base check shows divergence. Mechanical fix, no approval.
+- `CompileRed` / `TestFail` / `PromptMisdelivery`: **Cannot be independently verified** in VN-Squad's architecture. These require Tech Lead human judgment on the summary + mandatory user approval before recovery dispatch. The Tech Lead reads the summary, assesses plausibility, and confirms before acting.
+
+**Explicit architectural concession:** Full independence for `CompileRed` and `TestFail`
+classification is not achievable within VN-Squad's Task-tool architecture. The design
+does not pretend otherwise. For these failure types, user approval is the safeguard —
+a human reads the evidence and decides, rather than automated routing from unverifiable
+agent-authored text.
+
+**Agent `AGENT_RESULT` block (advisory — corroborating only):**
+
+Agents emit:
 ```
 AGENT_RESULT:
   status: success | failure
@@ -51,26 +79,23 @@ AGENT_RESULT:
   files_changed: <integer>
 ```
 
-But this block is **corroborating context**, not the routing trigger. Rules:
-- If external signals and `AGENT_RESULT` agree → route on the agreed classification
-- If external signals say failure but `AGENT_RESULT` says success → external signals win; route as failure and note the discrepancy
-- If `AGENT_RESULT` is missing or malformed → do NOT treat as `ProviderFailure`; instead treat as "unclassified" and fall back to external-signal-only routing
-- Only use `ProviderFailure` when the agent summary itself is empty, truncated, or clearly non-responsive (a real provider-level failure, not a missing block)
+Missing or malformed blocks → treat as "unclassified", not `ProviderFailure`. Apply
+Tier 1 signals only. `ProviderFailure` is reserved for genuinely empty/truncated summaries.
 
-**Routing table (classification → recovery):**
+**Routing table:**
 
 | Classification | Primary signal | Recovery action | Approval required? |
 |---|---|---|---|
-| `EmptyDiff` | 0 files changed (git) | Re-dispatch to [codex] | No (low-risk) |
-| `CompileRed` | Build error pattern in summary | `/codex:rescue` with evidence | Yes |
-| `TestFail` | Non-zero test exit code | `/argue` to revisit design | Yes |
-| `StaleBranch` | merge-base too old | Sync (Feature 3), then retry | No (mechanical) |
-| `PromptMisdelivery` | Agent asks clarifying questions | Re-dispatch with full requirements | Yes |
-| `ProviderFailure` | Empty/truncated summary | Fallback agent in routing table | No (low-risk) |
+| `EmptyDiff` | Tier 1: git diff (0 files) | Re-dispatch to [codex] | No |
+| `ProviderFailure` | Tier 1: empty/truncated summary | Fallback agent | No |
+| `StaleBranch` | Tier 1: merge-base check | Sync (Feature 3), retry | No |
+| `CompileRed` | Tier 3 + human judgment | `/codex:rescue` with evidence | Yes |
+| `TestFail` | Tier 3 + human judgment | `/argue` to revisit design | Yes |
+| `PromptMisdelivery` | Tier 3 + human judgment | Re-dispatch with full requirements | Yes |
 
-**Why dual-signal:** An agent that failed can self-report `success` to suppress recovery.
-External signals (git diff count, exit codes, output patterns) are independent of agent
-intent and cannot be falsified by the agent's summary output.
+**Why this is highest priority:** The AGENTS.md already documents the manual recovery
+logic. This formalizes it with explicit trust tiers and preserves human oversight for
+the cases that cannot be independently verified.
 
 **Why this is highest priority:** The AGENTS.md already documents the manual recovery
 logic. This formalizes it with independent verification.
@@ -225,8 +250,30 @@ Blocking conditions (hard stops — not just advisory):
 - `tier` is below minimum for chosen path → "insufficient tier — run /verify --tier package"
 - `review_passed` false or missing when `merge-ready` → "review required — run /review"
 
+**Final re-fetch before merge action (TOCTOU fix):**
+
+Between Step 0 (rebase) and the user's final merge approval, `origin/master` can advance.
+To close this window, `/finish` performs a second lightweight check immediately before
+executing the merge/push:
+
+```bash
+# Re-fetch just before final action — check if upstream advanced since Step 0
+git fetch origin master --quiet
+CURRENT_REMOTE=$(git rev-parse origin/master)
+VERIFIED_BASE=$(jq -r '.upstream_base' .vn-squad/verify-state.json)
+
+if [ "$CURRENT_REMOTE" != "$VERIFIED_BASE" ]; then
+  echo "origin/master has advanced since verification — re-run /finish to rebase and re-verify"
+  exit 1
+fi
+```
+
+This binds approval to the exact upstream SHA used at verify time. If upstream advanced,
+the user is told to re-run `/finish` — which re-does Step 0 rebase and invalidates the
+stale verify state, requiring re-verification. No silent stale merges.
+
 The user still approves the final action. The PolicyEngine removes ambiguity by reading
-durable state — not session memory — and blocks unsound paths explicitly.
+durable state — not session memory — and blocks unsound paths, including late upstream drift.
 
 ---
 
@@ -243,10 +290,13 @@ After Step 0 rebase, HEAD changes → verify-state is stale → `/finish` blocks
 re-verify. This feels like friction but is correct: the rebased tree has never been tested.
 **Decision: embrace this behavior — it is the safety guarantee, not a bug.**
 
-### T3: Atomic write requires mktemp + mv in skill code (bash only)
-The `/verify` skill is a markdown file with bash instructions. `mktemp` + `mv` is
-portable bash. Shell script fragments in skill files are already used by `/finish`.
-**Decision: acceptable — consistent with existing skill implementation style.**
+### T3: Atomic write is sufficient — concurrent verify is structurally impossible
+VN-Squad's Tech Lead operates within Claude Code's sequential conversation loop. Only one
+tool call executes at a time. Two concurrent `/verify` runs cannot occur in the same
+session. The `mktemp` + `mv` pattern provides atomicity against crashes and partial writes,
+which are the real failure modes here. `run_id` serves as an audit field, not a
+concurrency lock. No additional locking is needed for VN-Squad's single-writer architecture.
+**Decision: temp-rename is sufficient. Concurrency is a non-issue in this system.**
 
 ### T4: GreenContract tier enforcement prevents tier-skipping
 `/finish` validates minimum tiers from the state file. The Tech Lead cannot skip
