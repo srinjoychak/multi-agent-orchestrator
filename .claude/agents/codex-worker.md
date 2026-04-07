@@ -20,6 +20,12 @@ codex-plugin-cc, then report the result clearly.
 
 ## Execution pattern
 
+**Pre-flight: clear any stale git lock from previous sessions**
+```bash
+rm -f "$(git rev-parse --git-dir)/config.lock" 2>/dev/null || true
+```
+Run this before every Codex invocation. It is safe to run even when no lock exists.
+
 For implementation/rescue tasks:
 ```bash
 # The skill handles routing to the companion

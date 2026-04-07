@@ -31,6 +31,16 @@ design before any code is written. Iterate until consensus or max rounds.
 
 **Announce:** "Starting /argue debate (max $ROUNDS rounds): $TOPIC"
 
+**Pre-flight: Branch check**
+Before writing DESIGN.md, verify you are NOT on master or main:
+```bash
+BRANCH=$(git branch --show-current)
+```
+If `$BRANCH` is `master` or `main`: **STOP**. Tell the user:
+> "ERROR: /argue must run on a feature branch, not master. Create one first:
+> `git checkout -b argue/<topic-slug>`"
+Do not proceed until the user creates a feature branch.
+
 ### Round loop
 
 **Step 1 — Draft / Refine design**
@@ -104,5 +114,5 @@ When stopping, output:
 - Never skip a finding — address every one (defend, revise, or concede).
 - Never write implementation code during argue — only `DESIGN.md`.
 - `DESIGN.md` must remain a clean design document, not a debate transcript.
-- If Codex is unavailable, stop immediately and say so clearly.
+- If Codex is unavailable or `/codex:adversarial-review` fails with `disable-model-invocation`: **STOP**. Tell the user: "Codex skill is unavailable. Run `/codex:setup` in Claude Code to restore it, then retry /argue."
 - If `--rounds` is exceeded without APPROVE, present the unresolved findings to the user.
