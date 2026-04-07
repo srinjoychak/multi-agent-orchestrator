@@ -1,328 +1,280 @@
-# DESIGN.md — VN-Squad v2: claw-code-parity Feature Adoption
+# DESIGN.md — VN-Squad v3: Self-Improving Multi-Vendor Orchestration
 
 ## Problem Statement
 
-VN-Squad v2 is a skills-native multi-agent orchestration system where Claude (Tech Lead)
-coordinates Gemini and Codex workers via `/dispatch`, `/argue`, `/verify`, `/finish`, and
-other skills. The system works but requires heavy manual supervision: the Tech Lead must
-manually read agent failures, diagnose them, select a recovery agent, and re-dispatch.
-Retries are ad-hoc, verification is binary, and worktree branches can silently drift from
-master before `/finish` runs.
+VN-Squad v2 is a multi-vendor AI orchestration system (Claude Tech Lead + Gemini-worker +
+Codex-worker + vn-reviewer) that coordinates via skills (/argue, /dispatch, /plan, /verify,
+/finish, /review). It produces quality output through cross-vendor collaboration but has no
+feedback loops: agents start cold every session, routing is static, and hard-won knowledge
+(e.g., Gemini's 6 documented failure modes) exists only as manually-written memory files
+that a new session may never read.
 
-claw-code-parity's Orchestration Layer (Architecture 2) solves analogous problems in a
-Rust CLI context: typed failure taxonomy, auto-recovery recipes, tiered green contracts,
-per-worker state machines, and a policy engine for merge decisions.
-
-This document decides which of those five patterns to adopt into VN-Squad v2, in what
-form, and in what priority order.
+The v3 challenge is: add meaningful self-improvement without violating the properties that
+make v2 trustworthy — tiered trust verification, protected files, human-in-the-loop for
+unverifiable failures, worktree isolation, lightweight auditable tooling (no daemons).
 
 ---
 
-## Proposed Approach
+## Proposed Approach: Option A — Minimal Evolutionary Layer
 
-### Feature 1: RecoveryRecipes — ADOPT (highest priority)
+### Architecture Decision
 
-**What:** After a dispatched agent returns, classify the failure type from its output and
-auto-route to the correct recovery path — without requiring Tech Lead intervention.
+**Adopt Option A (persistence layer on v2) as the v3 foundation.** Borrow architectural
+*patterns* from Option B (AgentScope) and Option C (DSPy) without adopting their
+*infrastructure requirements* (daemons, message brokers, databases, Python runtimes).
 
-**Form in VN-Squad v2 (revised — tiered-trust classification):**
+**Rationale:** The bottleneck in v2 is not infrastructure — it is feedback loops. Every
+dispatch already produces all the signal needed for self-improvement (AGENT_RESULT blocks,
+git diffs, review verdicts). The gap is that this signal evaporates at session end. Closing
+the feedback loop requires only persistent writes to `.vn-squad/`, not a new runtime.
 
-Failure classification uses a **tiered trust model** that acknowledges a fundamental
-architectural constraint: in VN-Squad, the Tech Lead receives agent output only through
-the Claude Code Task tool's return value. There is no separate subprocess runner the Tech
-Lead can intercept for raw exit codes or build logs. The agent IS the runner.
+Option B (microservices + database) introduces fragility in VN-Squad's WSL2 environment
+where background processes do not survive Windows restarts. Claude Code's conversation loop
+is inherently synchronous; a message broker does not change this — it adds failure modes.
 
-Given this constraint, classification uses three tiers of evidence, ordered by reliability:
-
-**Tier 1 — Fully independent (highest trust):**
-
-| Signal | How checked | Trust level |
-|---|---|---|
-| Files changed | `git diff --stat <worktree-branch>` run by Tech Lead directly | Fully independent — agent cannot influence |
-| Summary presence | Is the agent return value non-empty? | Independent |
-
-**Tier 2 — Agent-authored but structurally verifiable:**
-
-| Signal | How checked | Trust level |
-|---|---|---|
-| `AGENT_RESULT.files_changed` | Cross-check against Tier 1 git diff count | Low — accept only if matches Tier 1 |
-| `AGENT_RESULT.failure_code` | Used only when Tier 1 agrees | Advisory |
-
-**Tier 3 — Agent-authored, unverifiable (lowest trust):**
-
-| Signal | How checked | Trust level |
-|---|---|---|
-| Exit code in summary text | Agent writes `exit: N` in prose | Unverifiable — agent-controlled |
-| Error patterns in summary | Pattern match on "error:", "SyntaxError" | Unverifiable — agent-controlled |
-
-**Classification rules:**
-
-- `EmptyDiff`: Tier 1 git diff returns 0 files. Fully independent. Auto-recovery, no approval.
-- `ProviderFailure`: Agent summary is empty/truncated (Tier 1 presence check). Auto-fallback, no approval.
-- `StaleBranch`: Tier 1 merge-base check shows divergence. Mechanical fix, no approval.
-- `CompileRed` / `TestFail` / `PromptMisdelivery`: **Cannot be independently verified** in VN-Squad's architecture. These require Tech Lead human judgment on the summary + mandatory user approval before recovery dispatch. The Tech Lead reads the summary, assesses plausibility, and confirms before acting.
-
-**Explicit architectural concession:** Full independence for `CompileRed` and `TestFail`
-classification is not achievable within VN-Squad's Task-tool architecture. The design
-does not pretend otherwise. For these failure types, user approval is the safeguard —
-a human reads the evidence and decides, rather than automated routing from unverifiable
-agent-authored text.
-
-**Agent `AGENT_RESULT` block (advisory — corroborating only):**
-
-Agents emit:
-```
-AGENT_RESULT:
-  status: success | failure
-  failure_code: EmptyDiff | CompileRed | TestFail | StaleBranch | PromptMisdelivery | ProviderFailure | none
-  evidence: <single line>
-  files_changed: <integer>
-```
-
-Missing or malformed blocks → treat as "unclassified", not `ProviderFailure`. Apply
-Tier 1 signals only. `ProviderFailure` is reserved for genuinely empty/truncated summaries.
-
-**Routing table:**
-
-| Classification | Primary signal | Recovery action | Approval required? |
-|---|---|---|---|
-| `EmptyDiff` | Tier 1: git diff (0 files) | Re-dispatch to [codex] | No |
-| `ProviderFailure` | Tier 1: empty/truncated summary | Fallback agent | No |
-| `StaleBranch` | Tier 1: merge-base check | Sync (Feature 3), retry | No |
-| `CompileRed` | Tier 3 + human judgment | `/codex:rescue` with evidence | Yes |
-| `TestFail` | Tier 3 + human judgment | `/argue` to revisit design | Yes |
-| `PromptMisdelivery` | Tier 3 + human judgment | Re-dispatch with full requirements | Yes |
-
-**Why this is highest priority:** The AGENTS.md already documents the manual recovery
-logic. This formalizes it with explicit trust tiers and preserves human oversight for
-the cases that cannot be independently verified.
-
-**Why this is highest priority:** The AGENTS.md already documents the manual recovery
-logic. This formalizes it with independent verification.
+Option C (DSPy differentiable modules) requires a Python runtime and DSPy dependency for
+an orchestration system that currently has zero runtime dependencies beyond Node.js. The
+self-optimization benefit does not justify the dependency surface for VN-Squad's use case
+(code orchestration, not research ML).
 
 ---
 
-### Feature 2: GreenContract Tiers in `/verify` — ADOPT (medium priority)
+## The Persistence Layer: `.vn-squad/` Extension
 
-**What:** Replace the binary pass/fail `/verify` gate with a 4-tier confidence ladder:
-`TargetedTests → Package → Workspace → MergeReady`.
-
-**Form in VN-Squad v2:**
-
-`/verify` accepts a `--tier` flag:
+All new v3 state lives in `.vn-squad/` (untracked, like `verify-state.json`). Plain JSON.
+No new dependencies. The Tech Lead reads these files at session start; skills write to them
+at dispatch completion.
 
 ```
-/verify --tier targeted    # fast gate before /review (tests for changed files only)
-/verify --tier package     # before /finish merge-locally
-/verify --tier workspace   # before /finish create-PR
-/verify --tier merge-ready # workspace green + /review completed + policy clear
+.vn-squad/
+├── verify-state.json            ← v2 (already exists)
+├── skill-registry.json          ← NEW: every dispatch outcome (foundation)
+├── session-context.json         ← NEW: live inter-agent knowledge sharing
+├── skill-manifest.json          ← NEW: dynamic skill discovery (quick win)
+├── trajectories/                ← NEW: full dispatch sequences (SE-Agent pattern)
+│   └── <uuid>.json
+├── skills/                      ← NEW: reusable solution snapshots (AgentFactory)
+│   └── <task-type>-<hash>.json
+├── prompt-patches.json          ← NEW: safe prompt evolution (no protected file mutation)
+└── specialization-profile/      ← NEW: per-agent empirical performance
+    ├── gemini-worker.json
+    └── codex-worker.json
 ```
 
-**Verification results are persisted atomically to `.vn-squad/verify-state.json`**,
-written via temp-file-plus-rename to prevent partial writes:
+### Schema: skill-registry.json (foundation for all other gaps)
 
-```bash
-# Atomic write pattern (used by /verify skill)
-TMPFILE=$(mktemp .vn-squad/verify-state.XXXXXX)
-cat > "$TMPFILE" << EOF
+```json
 {
   "schema_version": 1,
-  "run_id": "<uuid>",
-  "head_commit": "<sha of HEAD at verify time>",
-  "upstream_base": "<sha of origin/master at verify time>",
-  "tier": "package",
-  "timestamp": "<iso8601>",
-  "review_passed": true,
-  "review_commit": "<sha>"
+  "entries": [{
+    "id": "uuid",
+    "timestamp": "iso8601",
+    "skill": "/dispatch",
+    "agent": "gemini-worker",
+    "model": "flash",
+    "task_type": "code",
+    "outcome": "EmptyDiff",
+    "recovery_used": "codex-worker",
+    "recovery_outcome": "success",
+    "quality_signals": {
+      "review_verdict": "APPROVE",
+      "files_changed": 4
+    }
+  }]
 }
-EOF
-mv "$TMPFILE" .vn-squad/verify-state.json
 ```
 
-Key fields:
-- `head_commit` — the exact HEAD that was tested. `/finish` validates this matches current HEAD.
-- `upstream_base` — the `origin/master` SHA at verify time. After Step 0 rebase in `/finish`, if HEAD changes, the stored `head_commit` is stale and `/finish` blocks.
-- `schema_version` — allows future schema evolution without silent misreads.
-- `run_id` — unique per verify run; guards against concurrent verify collisions.
+### Schema: session-context.json (inter-agent knowledge sharing)
 
-**`/finish` gate logic (reads verify-state.json):**
+```json
+{
+  "session_id": "uuid",
+  "conventions": {
+    "module_pattern": "ESM with named exports",
+    "error_handling": "Result<T, E> pattern"
+  },
+  "completed_tasks": [{
+    "id": "task-1",
+    "agent": "gemini-worker",
+    "summary": "...",
+    "files": ["src/auth/token.js"]
+  }]
+}
+```
 
-1. Read and parse `verify-state.json` — fail loudly if missing, malformed, or wrong `schema_version`
-2. Validate `head_commit == git rev-parse HEAD` — if rebase changed HEAD, block and require re-verify
-3. Validate `tier` meets minimum for the chosen finish path
-4. If `merge-ready` path: validate `review_passed == true` AND `review_commit == HEAD`
+The Tech Lead writes `session-context.json` before dispatch; `/dispatch` injects relevant
+sections into each agent's task prompt under a "Prior context" block. Agents are READ-ONLY
+consumers of session context — only the Tech Lead writes to it.
 
-This makes the safety gate deterministic and reproducible — no session memory required.
+### Schema: specialization-profile/<agent>.json
 
-**Why medium priority:** The durable state file solves the harder non-determinism problem
-and is a prerequisite for a trustworthy PolicyEngine (Feature 5).
+```json
+{
+  "agent": "gemini-worker",
+  "strengths": [
+    { "task_type": "research", "success_rate": 1.0, "sample_size": 8 }
+  ],
+  "weaknesses": [
+    { "task_type": "code", "success_rate": 0.33, "failure_codes": ["EmptyDiff"], "sample_size": 12 }
+  ],
+  "constraints": ["embed full file contents inline", "--output-format json required"],
+  "last_updated": "iso8601"
+}
+```
 
 ---
 
-### Feature 3: StaleBranchDetection in `/finish` — ADOPT (revised)
+## The Self-Improvement Loop
 
-**What:** Before running tests in `/finish`, fetch the remote and synchronize the branch
-against `origin/master` via rebase — not a blind local-master merge.
-
-**Form in VN-Squad v2:**
-
-Add Step 0 to `/finish` (before the existing Step 1: Verify Tests):
-
-```bash
-# Require clean working tree before touching the branch
-if [ -n "$(git status --porcelain)" ]; then
-  echo "Uncommitted changes detected — commit or stash before /finish"
-  exit 1
-fi
-
-# Fetch remote state — local master may be stale
-git fetch origin master
-
-# Compare to remote master, not local master
-REMOTE_MASTER=$(git rev-parse origin/master)
-BASE=$(git merge-base HEAD origin/master)
-
-if [ "$BASE" != "$REMOTE_MASTER" ]; then
-  echo "Branch is stale vs origin/master — rebasing before tests"
-  git rebase origin/master
-  # After rebase, HEAD SHA has changed — verify-state.json is now stale
-  # /finish will block at the verify gate and require re-verify
-fi
 ```
-
-Rebase (not merge) produces a linear history. If rebase hits conflicts, `/finish` halts
-and reports them — tests do not run against a broken tree.
-
-**Post-rebase consequence:** Rebase changes the HEAD SHA, which invalidates
-`verify-state.json`. This is intentional and correct — tests ran against the pre-rebase
-tree, not the post-rebase tree. The Tech Lead re-runs `/verify --tier package` after
-successful rebase before proceeding.
-
-**Why rebase + remote-fetch over local merge:** A blind `git merge master --no-edit`
-against stale local master can certify a tree behind the remote. Fetching first and
-rebasing produces a deterministic, forward-only base.
+Session start
+  │
+  ├── Tech Lead reads skill-registry.json + specialization-profiles
+  │   → calibrates routing (overrides static AGENTS.md table if evidence is strong)
+  │
+  ├── Tech Lead writes session-context.json with initial conventions
+  │
+  ├── /dispatch → agents execute in worktrees
+  │
+  ├── Post-dispatch (existing):
+  │   ├── Tier 1 classification: git diff --stat (external signal)
+  │   ├── Tier 2 cross-check: AGENT_RESULT.files_changed
+  │   └── Tier 3 advisory: prose patterns
+  │
+  ├── Post-dispatch (NEW v3):
+  │   ├── Append outcome to skill-registry.json
+  │   ├── Append task summary to session-context.json
+  │   ├── If outcome == success + novel solution: snapshot to skills/<hash>.json
+  │   └── If outcome == failure: Tech Lead may suggest prompt-patches.json addition
+  │
+  └── Session end: update specialization-profile/<agent>.json from registry aggregation
+```
 
 ---
 
-### Feature 4: Lane Status Files — DO NOT ADOPT (over-engineering)
+## The Five Debate Questions — Claude's Positions
 
-**What:** Each dispatched agent writes a `lane_status.json` to its worktree at key
-transitions (started, running, finished, failed) so the Tech Lead can poll mid-dispatch.
+### Q1: Is Option A sufficient, or does it plateau?
 
-**Why not adopt:**
+**Position: Option A is sufficient for 50+ dispatch cycles.** The plateau argument assumes
+that the improvement signal is richer than a JSON file can capture. But in VN-Squad's
+context, the highest-value signal is coarse: which agent succeeds on which task type, at
+what rate, after what kind of failure. This is fully captured in `skill-registry.json`.
 
-VN-Squad runs inside Claude Code's conversation loop, which is synchronous. The Tech Lead
-cannot "poll mid-dispatch" — it waits for all Agent tool calls to return. The dual-signal
-classification in Feature 1 already provides machine-readable per-agent outcome data
-post-dispatch via external signal verification + advisory `AGENT_RESULT` blocks.
+The plateau risk is real but occurs at a different horizon: after ~200 sessions, you may
+want learned routing (MoA-style) rather than threshold-based routing. Option A is designed
+to accumulate the data that would train such a router — it is not incompatible with Option
+B/C, it just defers their infrastructure cost to when the data justifies it.
 
-Lane status files would duplicate this with filesystem overhead and no observable benefit
-until dispatch scales to 10+ simultaneous agents or async dispatch is added.
+### Q2: Does Option B violate the lightweight principle?
 
-**Revisit when:** Dispatch volume exceeds 10 parallel agents or async background dispatch
-is introduced to VN-Squad.
+**Position: Yes, in VN-Squad's specific environment, and the principle is worth preserving.**
+WSL2 background daemons are fragile across Windows restarts. The value of VN-Squad's
+"plain JSON + markdown" constraint is auditability and zero-ops maintenance: there is no
+database to migrate, no broker to restart, no schema to version-control separately. Option A
+preserves this. Option B is appropriate for teams with dedicated infra; VN-Squad's target
+context is a single developer or small team running Claude Code locally.
 
----
+### Q3: Minimum viable self-improvement loop for 50 cycles
 
-### Feature 5: PolicyEngine in `/finish` — PARTIAL ADOPT (low priority)
+**Position:** Three artifacts, one extended protocol:
+1. `skill-registry.json` — every outcome logged (closes the feedback loop)
+2. `session-context.json` — prior task summaries injected into subsequent dispatch prompts
+3. `specialization-profile/<agent>.json` — routing calibration (auto-suggestion; human approves)
 
-**What:** Structured policy evaluation that reads durable state and produces a
-deterministic recommendation — not a guess from session memory.
+And one AGENT_RESULT extension: add `quality_signals.review_verdict` to the existing
+protocol. This captures the quality dimension without changing the trust tier model.
 
-**Form in VN-Squad v2 (partial):**
+Observable gains appear as soon as Codex is auto-suggested over Gemini for code tasks
+where the registry shows Gemini's EmptyDiff rate > 50%. That is a routing improvement
+with zero new infrastructure — just a Tech Lead reading a JSON file.
 
-Do NOT fully automate the merge decision (CLAUDE.md constraint: Tech Lead never commits
-to master without user approval). Instead, `/finish` computes a recommendation by reading
-`verify-state.json` after Step 0 rebase:
+### Q4: Automatic routing vs recommendation requiring approval
 
-```
-PolicyEngine evaluation (recommendation only — user approves):
-  head_commit matches current HEAD: yes
-  upstream_base matches current origin/master: yes
-  green_tier: package
-  review_passed: yes (review_commit matches HEAD)
-  stale: no (rebased in Step 0, verify re-ran post-rebase)
-  → RECOMMENDED: merge locally (Option 1)
-```
+**Position: Recommendation requiring Tech Lead approval until sample_size >= 10.**
 
-Blocking conditions (hard stops — not just advisory):
-- `head_commit` doesn't match HEAD → "verification state is stale — re-run /verify"
-- `tier` is below minimum for chosen path → "insufficient tier — run /verify --tier package"
-- `review_passed` false or missing when `merge-ready` → "review required — run /review"
+Below 10 samples, the routing evidence is too thin to trust. Auto-routing on 3 data points
+risks compounding errors. Above 10 samples with `success_rate < 0.5` on a task type, the
+system PROPOSES a routing override: "Gemini has succeeded on 2/8 code tasks — recommend
+routing to Codex." The Tech Lead confirms.
 
-**Final re-fetch before merge action (TOCTOU fix):**
+This is consistent with the v2 principle: for unverifiable or thin-evidence decisions,
+human approval is the safeguard. Routing changes are consequential (they change which
+agent receives which budget); they should not auto-apply on sparse data.
 
-Between Step 0 (rebase) and the user's final merge approval, `origin/master` can advance.
-To close this window, `/finish` performs a second lightweight check immediately before
-executing the merge/push:
+### Q5: Where does the "agents improving agents" loop close?
 
-```bash
-# Re-fetch just before final action — check if upstream advanced since Step 0
-git fetch origin master --quiet
-CURRENT_REMOTE=$(git rev-parse origin/master)
-VERIFIED_BASE=$(jq -r '.upstream_base' .vn-squad/verify-state.json)
+**Position: At the Tech Lead + human approval boundary. Always.**
 
-if [ "$CURRENT_REMOTE" != "$VERIFIED_BASE" ]; then
-  echo "origin/master has advanced since verification — re-run /finish to rebase and re-verify"
-  exit 1
-fi
-```
+Agents produce outputs. The Tech Lead observes, classifies (via tiered trust), and decides.
+Prompt patches (`prompt-patches.json`) are suggested by the Tech Lead after observing a
+failure pattern but require human approval before being applied to future dispatches.
+Specialization profiles are updated from registry data but routing changes from them are
+proposed, not automatic.
 
-This binds approval to the exact upstream SHA used at verify time. If upstream advanced,
-the user is told to re-run `/finish` — which re-does Step 0 rebase and invalidates the
-stale verify state, requiring re-verification. No silent stale merges.
-
-The user still approves the final action. The PolicyEngine removes ambiguity by reading
-durable state — not session memory — and blocks unsound paths, including late upstream drift.
+No agent modifies another agent's definition. No agent modifies its own skill file.
+The improvement loop is: agent output → tiered trust classification → Tech Lead proposes →
+human approves → registry updated → future routing calibrated. The closure point is human
+judgment. This is the correct design for a system where `CompileRed` and `TestFail` are
+already gated on human judgment — consistency demands the improvement loop follow the same
+trust model.
 
 ---
 
 ## Key Tradeoffs
 
-### T1: Dual-signal classification adds Tech Lead reasoning overhead
-The Tech Lead must check external signals (git diff, exit codes) AND read the advisory
-`AGENT_RESULT` block. This is more work per dispatch than pure self-report routing.
-**Mitigation:** External signals are cheap to check (one `git diff --stat` call). The
-cost is low; the benefit (no self-report suppression of failures) is high.
+### T1: Option A plateau vs Option B infrastructure cost
+Option A plateaus at threshold-based routing; Option B enables learned routing at the cost
+of daemon fragility and ops complexity in WSL2. **Decision: Option A for v3; design
+skill-registry schema to be compatible with a future MoA-style router if accumulated data
+justifies it.**
 
-### T2: verify-state.json invalidated by rebase is the correct behavior
-After Step 0 rebase, HEAD changes → verify-state is stale → `/finish` blocks and requires
-re-verify. This feels like friction but is correct: the rebased tree has never been tested.
-**Decision: embrace this behavior — it is the safety guarantee, not a bug.**
+### T2: Auto-routing vs human-approved routing
+Auto-routing on empirical data is faster but risks compounding errors on thin samples.
+Human-approved routing is slower but consistent with v2's trust model.
+**Decision: recommendation-with-approval below sample_size 10; revisit threshold at v3.1.**
 
-### T3: Atomic write is sufficient — concurrent verify is structurally impossible
-VN-Squad's Tech Lead operates within Claude Code's sequential conversation loop. Only one
-tool call executes at a time. Two concurrent `/verify` runs cannot occur in the same
-session. The `mktemp` + `mv` pattern provides atomicity against crashes and partial writes,
-which are the real failure modes here. `run_id` serves as an audit field, not a
-concurrency lock. No additional locking is needed for VN-Squad's single-writer architecture.
-**Decision: temp-rename is sufficient. Concurrency is a non-issue in this system.**
+### T3: Agents as READ-ONLY consumers of session-context.json
+Allowing agents to write to session-context.json enables richer sharing but opens a
+self-report trust problem (an agent could write false context to influence a sibling).
+**Decision: Tech Lead is the sole writer. Agents are read-only consumers via task prompt
+injection. This preserves the Tier 1 independence principle.**
 
-### T4: GreenContract tier enforcement prevents tier-skipping
-`/finish` validates minimum tiers from the state file. The Tech Lead cannot skip
-`package` green before a local merge regardless of which `--tier` was run.
-**This is the intended behavior — enforcement is the whole point of the gate.**
+### T4: prompt-patches.json as the prompt evolution mechanism
+Mutating protected skill files (CLAUDE.md, AGENTS.md) risks identity corruption.
+prompt-patches.json is a separate, non-protected artifact that holds additive constraints
+merged at dispatch time. Human must approve each patch addition.
+**Decision: prompt-patches.json pattern adopted. Protected files never mutated.**
 
-### T5: Lane status files rejected — visibility blind spots remain
-Without per-lane status files, there is no mid-dispatch visibility for stuck agents.
-**Mitigation:** Dual-signal post-dispatch classification (Feature 1) surfaces outcomes.
-Add a max-wait note to `/dispatch` for manual investigation of long-running agents.
+### T5: Trajectory capture scope
+Recording every dispatch sequence in `trajectories/` enables SE-Agent-style replay and
+learning. But trajectories grow unbounded. Without pruning, the directory becomes noise.
+**Decision: Capture trajectories only for tasks with `outcome == success` AND
+`quality_signals.review_verdict == APPROVE`. This keeps the library high-signal.**
 
 ---
 
 ## Open Questions
 
-1. Should the `EmptyDiff` auto-recovery (no approval required) be gated on `files_changed: 0`
-   from the `AGENT_RESULT` block, or only on the `git diff --stat` external signal? Using
-   only git diff avoids the self-report trust issue but requires the Tech Lead to run a
-   shell command for every dispatch. **Current design: git diff (external signal only).**
+1. **Registry size management:** `skill-registry.json` grows unbounded. When should entries
+   be pruned or archived? Proposal: rotate at 500 entries, archive to
+   `skill-registry-<year>.json`.
 
-2. Should `verify-state.json` be committed or untracked? Committed = reviewers see what ran.
-   Untracked = no git noise. **Current design: untracked (`.vn-squad/` in `.gitignore`).**
-   Risk: untracked state is wiped by `git clean -fd`. Add `.vn-squad/` to `.gitignore` only,
-   not to any clean command in `/finish`.
+2. **session-context.json lifecycle:** Does `session-context.json` reset on every new Claude
+   Code session, or persist across sessions? If it persists, stale conventions from a prior
+   feature branch could corrupt a new session. Proposal: reset on session start; seed from
+   the current branch's last trajectory if one exists.
 
-3. What happens when `/finish` is run in a repo with no remote (offline, local-only)?
-   `git fetch origin master` fails. **Current design: skip Step 0 if `origin` does not exist
-   and proceed with local-only branch detection.** Is this safe enough for the VN-Squad
-   local-dev use case?
+3. **Routing threshold calibration:** Is `sample_size >= 10` the right threshold for
+   auto-suggestion? Too low risks noise; too high delays useful recommendations.
+   Proposal: start at 10; adjust based on observed false-positive rate over first 100 cycles.
+
+4. **Cross-vendor skill transfer:** When `skills/<hash>.json` captures a successful solution
+   pattern, can it be offered as context to a different vendor agent on a similar task?
+   This is the AgentFactory pattern — but requires task similarity scoring. Is cosine
+   similarity on task description sufficient, or does this need structured task tagging?
+
+5. **Improvement validation:** Who decides that a prompt patch has improved outcomes?
+   Proposal: require 5 successes with the patch active before the patch is "graduated"
+   from patch to permanent AGENTS.md update (requiring explicit human approval of the
+   AGENTS.md change).
