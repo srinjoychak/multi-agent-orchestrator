@@ -5,3 +5,14 @@ node_modules/
 
 # Ephemeral Gemini auth dirs created by gemini-ask.js
 /tmp/gemini-auth-*
+
+# VN-Squad v3 runtime state (ephemeral — do not commit)
+.vn-squad/skill-registry.json
+.vn-squad/skill-registry-archive/
+.vn-squad/session-context.json
+.vn-squad/decisions.json
+.vn-squad/prompt-patches.json
+.vn-squad/specialization-profile/
+.vn-squad/trajectories/
+.vn-squad/skills/
+# skill-manifest.json IS committed (stable index of skills)

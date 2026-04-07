@@ -34,5 +34,20 @@
     "tools": "Read, Glob, Grep, Bash (read-only mode)",
     "memory": "project — accumulates codebase knowledge across sessions",
     "capabilities": ["review"]
+  },
+  "vn3-scripts": {
+    "description": "VN-Squad v3 self-improvement persistence layer scripts",
+    "location": "scripts/vn3/",
+    "scripts": {
+      "init-vn-squad.js": "Bootstrap .vn-squad/ artifacts (idempotent)",
+      "skill-manifest.js": "Scan .claude/commands/ → .vn-squad/skill-manifest.json",
+      "registry.js": "Atomic append dispatch outcomes to skill-registry.json",
+      "profile.js": "Recompute specialization-profile/ from registry",
+      "routing.js": "Routing decision algorithm — weighted_success_rate",
+      "session-context.js": "Seed/reset session-context.json, process CONTEXT_PROPOSALs",
+      "archive.js": "POSIX-atomic archive migration for skill-registry.json",
+      "patches.js": "prompt-patches lifecycle (add/expire/graduate)",
+      "trajectories.js": "Classify and capture trajectory type"
+    }
   }
 }

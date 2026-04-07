@@ -41,6 +41,45 @@ Every prompt must contain:
 
 ---
 
+## VN-Squad v3 Protocol Extensions
+
+### AGENT_RESULT Block (v3 extended)
+
+All agents emit this block at the end of their response (adding quality_signals to v2 protocol):
+
+```
+AGENT_RESULT:
+  status: success | failure
+  failure_code: EmptyDiff | CompileRed | TestFail | StaleBranch | PromptMisdelivery | ProviderFailure | none
+  evidence: <single line>
+  files_changed: <integer>
+  quality_signals:
+    review_verdict: APPROVE | REQUEST_CHANGES | not_run
+    test_coverage: present | absent | unknown
+```
+
+### CONTEXT_PROPOSAL Block (optional — v3)
+
+Agents MAY emit one CONTEXT_PROPOSAL when they discover a useful convention. Advisory only — Tech Lead decides:
+
+```
+CONTEXT_PROPOSAL:
+  key: conventions.<key_name>
+  value: <primitive value>
+  rationale: <one line>
+```
+
+Rules: max 1 per AGENT_RESULT; key must be `conventions.*` or `constraints.*`; do NOT propose previously rejected keys.
+
+### Recovery Annotation
+
+First line of a recovery task prompt must include:
+```
+[RETRY: <original-task-uuid>]
+```
+
+---
+
 ## Standard Prompt Template
 
 ```
