@@ -179,9 +179,13 @@ registry entries is atomic via rename. No locking daemon required.
 
 1. Read `registry_entry_count_at_recompute` from profile.
 2. Count current entries in `skill-registry.json`.
-3. If `current_count > profile_count_at_recompute` OR `last_recomputed_at > 30 min ago`
-   AND entry delta >= 5: **automatically recompute profile** before routing decisions are
+3. If `current_count > profile_count_at_recompute` OR `(last_recomputed_at > 30 min ago`
+   AND entry delta >= 5): **automatically recompute profile** before routing decisions are
    presented. Recomputation is not optional — stale profiles are not used for routing.
+   **Entry delta threshold = 5 (absolute):** At low frequency (1/week), recompute is rare.
+   At high frequency (10/day), 5 new entries ≈ 30 min of activity — consistent with the
+   30-minute time window. For deployments with >50 dispatches/day, set delta to 20 via
+   `prompt-patches.json routing_config.recompute_delta_threshold`. Configurable, not hardcoded.
 4. If unchanged: use cached profile (fast path — no I/O beyond entry count check).
 
 **Staleness = forced recompute, not a warning.** The prior design surfaced `staleness_warning`
@@ -230,11 +234,16 @@ Given task_type T and candidate agents from AGENTS.md static table:
          → Surface preliminary recommendation: "Preliminary — consider [other agent]"
          → AGENTS.md agent remains default; Tech Lead chooses
    - If stable (n >= 10):
-       If weighted_success_rate < 0.5 AND alternative agent has weighted_success_rate >= 0.7:
-         → Surface stable recommendation: "Route to [better agent] (n=N, rate=R)"
+       Compute weighted_success_rate for ALL agents with n >= 3 on task_type T.
+       Sort by weighted_success_rate descending. Candidate set = all agents where rate >= 0.7.
+       If the AGENTS.md default agent is NOT the top candidate:
+         → Surface stable recommendation listing top 1-2 candidates by rate (desc):
+           "Route to codex-worker (n=14, rate=0.86) over gemini-worker (n=11, rate=0.36)"
          → Record in decisions.json as routing_override_suggested
-         → Tech Lead accepts → routing_override_accepted (counts toward plateau milestone)
+         → Tech Lead accepts top candidate → routing_override_accepted
          → Tech Lead rejects → routing_override_rejected (false-positive tracking continues)
+       If no alternative has rate >= 0.7 OR default agent is already the top candidate:
+         → No suggestion (stay with AGENTS.md default)
 
 3. Recalibration trigger:
    If routing_overrides_that_worsened_outcome / routing_overrides_accepted > 0.3:
@@ -330,7 +339,9 @@ NEW PATCH proposed
       ├── Identify lowest-validated patch in same category (fewest validated_successes)
       ├── Surface conflict to Tech Lead:
       │   "New patch conflicts with existing low-value patch P (N validated_successes).
-      │    Options: (a) replace P with new patch, (b) reject new patch, (c) merge into P"
+      │    Options: (a) replace P with new patch, (b) reject new patch,
+      │    (c) merge into P — combine constraint texts into a single constraint string,
+      │        update P's rationale to reference both origins, keep P's id"
       └── New patch stays status: pending-conflict until Tech Lead resolves
           → Pending-conflict patches are NOT merged into dispatches
 ```
@@ -362,9 +373,11 @@ The `/dispatch` skill appends each completed task to `session-context.json`:
 ]
 ```
 
-A recovery dispatch is detected when a new task's prompt references a prior failed task
-(Tech Lead includes a "Retry after failure of task-uuid" annotation). The `/dispatch` skill
-sets `recovery_ref: "prior-task-uuid"` on the new task entry.
+A recovery dispatch is detected when a new task's prompt includes the annotation
+`[RETRY: task-uuid]` on the first line (Tech Lead adds this explicitly). The `/dispatch`
+skill extracts this annotation and sets `recovery_ref: "prior-task-uuid"` on the new
+task's `completed_tasks` entry in session-context.json. The annotation format is fixed
+so the skill can parse it reliably without ambiguity.
 
 At session end, any completed task with `outcome == failure` AND no subsequent task entry
 with `recovery_ref` pointing to it is classified as `no_recovery_attempted`. This is fully
@@ -496,9 +509,46 @@ recovery mechanism needed (rename approach).
 │   └── <task-type>-<hash>.json  ← reusable solution snapshots (AgentFactory)
 ├── prompt-patches.json          ← bounded, lifecycle-managed, conflict-checked patches
 └── specialization-profile/      ← per-agent pre-aggregated routing summaries
-    ├── gemini-worker.json       ← includes last_recomputed_at, staleness_warning
+    ├── gemini-worker.json       ← includes last_recomputed_at, registry_entry_count_at_recompute
     └── codex-worker.json
 ```
+
+### session-context.json formal schema
+
+```json
+{
+  "schema_version": 1,
+  "session_id": "uuid",
+  "branch": "feature/auth-refactor",
+  "created_at": "iso8601",
+  "seeded_from_trajectory": "success-<uuid> | null",
+  "conventions": {
+    "<key>": "<value>"
+  },
+  "rejected_keys": [
+    { "key": "conventions.json_output_required", "reason": "<tech lead note>",
+      "agent": "gemini-worker", "timestamp": "iso8601" }
+  ],
+  "pending_proposals": [
+    { "id": "uuid", "key": "conventions.json_output_required", "value": true,
+      "agent": "gemini-worker", "proposed_at": "iso8601",
+      "dispatch_cycles_pending": 0 }
+  ],
+  "completed_tasks": [
+    { "id": "task-uuid", "agent": "gemini-worker", "task_type": "code",
+      "outcome": "EmptyDiff", "timestamp": "iso8601", "recovery_ref": null }
+  ]
+}
+```
+
+**Session seeding rule:** At session start, `session-context.json` is reset (new session_id,
+empty completed_tasks, empty pending_proposals). `rejected_keys` does NOT carry over (stale
+rejections from a prior feature branch would corrupt a new session). `conventions` is seeded
+from the most recent `success-<uuid>.json` trajectory on the current branch, if one exists:
+only the `conventions` block is extracted, not the full prior context. If no success
+trajectory exists for the current branch, conventions starts empty. This is a
+**shallow-seed**: prior context influences starting conventions, but does not pollute the new
+session with prior task history.
 
 ---
 
