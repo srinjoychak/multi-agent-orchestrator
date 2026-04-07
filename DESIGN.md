@@ -15,266 +15,310 @@ unverifiable failures, worktree isolation, lightweight auditable tooling (no dae
 
 ---
 
-## Proposed Approach: Option A — Minimal Evolutionary Layer
+## Proposed Approach: Option A — Minimal Evolutionary Layer (Revised)
 
 ### Architecture Decision
 
-**Adopt Option A (persistence layer on v2) as the v3 foundation.** Borrow architectural
-*patterns* from Option B (AgentScope) and Option C (DSPy) without adopting their
-*infrastructure requirements* (daemons, message brokers, databases, Python runtimes).
+**Adopt Option A (persistence layer on v2) as the v3 foundation** for single-developer
+local deployments (including WSL2). Borrow architectural *patterns* from Option B (AgentScope)
+and Option C (DSPy) without adopting their *infrastructure requirements* (daemons, message
+brokers, databases, Python runtimes).
 
-**Rationale:** The bottleneck in v2 is not infrastructure — it is feedback loops. Every
-dispatch already produces all the signal needed for self-improvement (AGENT_RESULT blocks,
-git diffs, review verdicts). The gap is that this signal evaporates at session end. Closing
-the feedback loop requires only persistent writes to `.vn-squad/`, not a new runtime.
+**Scope clarification (Codex finding F7 — REVISE):** Option A is the right choice for
+single-developer WSL2 deployments where background daemons do not survive Windows restarts
+and ops burden must be zero. Teams running VN-Squad on Linux/macOS with dedicated
+infrastructure should revisit Option B at v3.1. This document scopes v3 to the dominant
+use case.
 
-Option B (microservices + database) introduces fragility in VN-Squad's WSL2 environment
-where background processes do not survive Windows restarts. Claude Code's conversation loop
-is inherently synchronous; a message broker does not change this — it adds failure modes.
-
-Option C (DSPy differentiable modules) requires a Python runtime and DSPy dependency for
-an orchestration system that currently has zero runtime dependencies beyond Node.js. The
-self-optimization benefit does not justify the dependency surface for VN-Squad's use case
-(code orchestration, not research ML).
+**Core rationale (unchanged):** The bottleneck in v2 is not infrastructure — it is feedback
+loops. Every dispatch already produces all signal needed for self-improvement. Closing the
+feedback loop requires only persistent writes to `.vn-squad/`, not a new runtime.
 
 ---
 
 ## The Persistence Layer: `.vn-squad/` Extension
 
 All new v3 state lives in `.vn-squad/` (untracked, like `verify-state.json`). Plain JSON.
-No new dependencies. The Tech Lead reads these files at session start; skills write to them
-at dispatch completion.
+No new dependencies.
 
 ```
 .vn-squad/
 ├── verify-state.json            ← v2 (already exists)
 ├── skill-registry.json          ← NEW: every dispatch outcome (foundation)
-├── session-context.json         ← NEW: live inter-agent knowledge sharing
+├── skill-registry-archive/      ← NEW: time-rotated registry entries (>12 months)
+│   └── 2025.json
+├── session-context.json         ← NEW: inter-agent knowledge (Tech Lead writes + approves)
 ├── skill-manifest.json          ← NEW: dynamic skill discovery (quick win)
-├── trajectories/                ← NEW: full dispatch sequences (SE-Agent pattern)
-│   └── <uuid>.json
+├── trajectories/                ← NEW: success + failure-recovery chains (SE-Agent pattern)
+│   ├── success-<uuid>.json
+│   └── recovery-<uuid>.json
 ├── skills/                      ← NEW: reusable solution snapshots (AgentFactory)
 │   └── <task-type>-<hash>.json
-├── prompt-patches.json          ← NEW: safe prompt evolution (no protected file mutation)
+├── prompt-patches.json          ← NEW: safe prompt evolution (bounded, conflict-checked)
 └── specialization-profile/      ← NEW: per-agent empirical performance
     ├── gemini-worker.json
     └── codex-worker.json
 ```
 
-### Schema: skill-registry.json (foundation for all other gaps)
+---
+
+## Revised Design Decisions (Addressing Codex Round 1 Findings)
+
+### Finding F1 (CRITICAL): Option A plateau is unfalsifiable
+
+**REVISE.** The "50+ cycles" claim needed a falsifiable measurement framework.
+
+**Plateau measurement milestone:** Option A is considered delivering meaningful self-improvement
+when **routing recommendations based on registry data override the static AGENTS.md table
+on >= 3 distinct task types within the first 50 dispatch cycles**. If this milestone is
+not reached by cycle 50, the accumulated data is insufficient — either dispatch volume is
+too low or task types are not diverse enough — and the Tech Lead should evaluate whether
+the system warrants a re-architecture review (Option B/C).
+
+Measurement is automatic: `specialization-profile/<agent>.json` records when a routing
+recommendation was generated and whether it was accepted. The Tech Lead checks this at
+cycle 25 as a midpoint review.
+
+---
+
+### Finding F2 (CRITICAL): session-context.json read-only is too restrictive
+
+**REVISE.** The read-only constraint creates a real bottleneck: if Gemini discovers a
+recovery strategy mid-session, that knowledge is lost to Codex unless the Tech Lead
+manually extracts and updates it. This defeats the stated purpose of inter-agent learning.
+
+**Revised mechanism — Context Proposals (human-approved write path):**
+
+Agents may emit a `CONTEXT_PROPOSAL:` block at the end of their AGENT_RESULT:
+
+```
+CONTEXT_PROPOSAL:
+  key: conventions.json_output_required
+  value: true
+  rationale: "Task required JSON output; flag prevented malformed response"
+```
+
+The Tech Lead reviews proposals after each dispatch (alongside the existing Tier 1
+classification step) and either:
+- **Accepts:** Merges the key-value into `session-context.json`
+- **Rejects:** Ignores (proposal is not stored)
+
+This preserves the self-report trust constraint (agents cannot unilaterally write shared
+state) while enabling genuine inter-agent learning. The write path remains exclusively
+through Tech Lead review — consistent with the human-approval pattern used for prompt
+patches and routing overrides.
+
+---
+
+### Finding F3 (MAJOR): sample_size >= 10 threshold uncalibrated
+
+**REVISE.** Start at `sample_size >= 3` for generating routing *suggestions*. Below 3, the
+system is silent. At 3-9, suggestions are labeled `(preliminary — n=N)` and carry a
+warning. At >= 10, suggestions are labeled `(stable — n=N)`.
+
+**Auto-threshold adjustment mechanism:** The `specialization-profile/<agent>.json` tracks
+`routing_overrides_accepted` and `routing_overrides_that_worsened_outcome`. After every
+10 accepted overrides, the system computes: if `worsened / accepted > 0.3`, the current
+effective threshold is too low and the profile logs a recommendation to raise it. The Tech
+Lead reviews this recommendation and adjusts the threshold in `prompt-patches.json` under
+a `routing_config` section. The system cannot auto-adjust its own threshold — but it can
+flag when calibration is needed.
+
+---
+
+### Finding F4 (MAJOR): Trajectory capture APPROVE-only creates survivor bias
+
+**REVISE.** The original filter (APPROVE verdicts only) discards the highest-signal
+trajectories: failure-recovery chains.
+
+**Revised trajectory capture policy:**
+
+| Trajectory type | Capture? | Filename prefix | Value |
+|---|---|---|---|
+| `outcome == success AND review_verdict == APPROVE` | Yes | `success-<uuid>.json` | High-confidence happy path |
+| `outcome == failure followed by recovery outcome == success` | Yes | `recovery-<uuid>.json` | Recovery patterns (highest signal) |
+| `outcome == failure, same failure_code on same task_type, 3rd+ occurrence` | No | — | Duplicate noise |
+| `outcome == failure, no recovery attempted` | No | — | Incomplete signal |
+| `outcome == success AND review_verdict == REQUEST_CHANGES` | No | — | Borderline quality, not canonical |
+
+Recovery trajectories include the full chain: original task prompt → failure classification
+→ recovery agent → recovery prompt → success outcome. This is the SE-Agent pattern applied
+correctly — not just replay of winners, but replay of recovery paths.
+
+---
+
+### Finding F5 (MAJOR): prompt-patches.json has no conflict detection
+
+**REVISE.** Unbounded patch accumulation with no conflict detection is a latency and
+coherence liability.
+
+**Bounded patch protocol:**
 
 ```json
 {
   "schema_version": 1,
-  "entries": [{
+  "patches": [{
     "id": "uuid",
-    "timestamp": "iso8601",
-    "skill": "/dispatch",
     "agent": "gemini-worker",
-    "model": "flash",
-    "task_type": "code",
-    "outcome": "EmptyDiff",
-    "recovery_used": "codex-worker",
-    "recovery_outcome": "success",
-    "quality_signals": {
-      "review_verdict": "APPROVE",
-      "files_changed": 4
-    }
+    "category": "formatting|constraints|tool-flags|context",
+    "constraint": "Embed full file contents inline. Never reference files by path only.",
+    "rationale": "Gemini EmptyDiff pattern: 5 occurrences",
+    "added": "iso8601",
+    "dispatch_count": 0,
+    "validated_successes": 0,
+    "status": "active|graduated|expired"
   }]
 }
 ```
 
-### Schema: session-context.json (inter-agent knowledge sharing)
-
-```json
-{
-  "session_id": "uuid",
-  "conventions": {
-    "module_pattern": "ESM with named exports",
-    "error_handling": "Result<T, E> pattern"
-  },
-  "completed_tasks": [{
-    "id": "task-1",
-    "agent": "gemini-worker",
-    "summary": "...",
-    "files": ["src/auth/token.js"]
-  }]
-}
-```
-
-The Tech Lead writes `session-context.json` before dispatch; `/dispatch` injects relevant
-sections into each agent's task prompt under a "Prior context" block. Agents are READ-ONLY
-consumers of session context — only the Tech Lead writes to it.
-
-### Schema: specialization-profile/<agent>.json
-
-```json
-{
-  "agent": "gemini-worker",
-  "strengths": [
-    { "task_type": "research", "success_rate": 1.0, "sample_size": 8 }
-  ],
-  "weaknesses": [
-    { "task_type": "code", "success_rate": 0.33, "failure_codes": ["EmptyDiff"], "sample_size": 12 }
-  ],
-  "constraints": ["embed full file contents inline", "--output-format json required"],
-  "last_updated": "iso8601"
-}
-```
+**Lifecycle rules:**
+- **Max 20 active patches per agent** — adding a 21st requires retiring an existing one
+- **Category conflict:** Two patches in the same category for the same agent must be
+  explicitly resolved before the second is added (Tech Lead reviews the conflict)
+- **Expiry:** A patch that sees 0 `validated_successes` after 50 dispatches is marked
+  `expired` and removed from the merge path
+- **Graduation:** A patch with >= 5 `validated_successes` is flagged for graduation:
+  Tech Lead may explicitly promote it to a permanent constraint in AGENTS.md (requires
+  human approval of the AGENTS.md change — protected file update, fully intentional)
+- **At dispatch:** Only `status == active` patches are merged into the agent prompt.
+  The merge is additive (appended to the prompt under "Additional constraints") with a
+  `[vn-squad patch: <id>]` tag so the Tech Lead can trace which constraint came from where
 
 ---
 
-## The Self-Improvement Loop
+### Finding F6 (MAJOR): Registry size management is arbitrary
+
+**REVISE.** Replace rotation-at-500-entries with **time-bucketed queries**.
+
+**Registry management policy:**
+- Active registry (`skill-registry.json`) holds entries for the **last 6 months**
+- Entries older than 6 months are moved to `skill-registry-archive/<year>-<half>.json`
+  on session start (lazy migration — only if the oldest entry in the active file is > 6
+  months old)
+- Archive files are never queried by default. The Tech Lead or `/plan` skill queries only
+  the active registry
+- If a task type has < 3 entries in the active registry, `/plan` may optionally query the
+  most recent archive file to supplement — but this is explicit, not automatic
+- Archive files are never deleted (audit trail). Storage impact: at 1 dispatch/week,
+  6-month window = ~26 entries. At 10/week = ~260 entries. Active file stays small.
+
+**Routing query pattern:** Rather than scanning all entries, `specialization-profile/<agent>.json`
+is the pre-aggregated read path. The registry is the write-append log; profiles are the
+pre-computed summaries. The profile is regenerated from the active registry at session start
+(lazy recompute if registry has new entries since last profile update).
+
+---
+
+## The Self-Improvement Loop (Final)
 
 ```
 Session start
   │
-  ├── Tech Lead reads skill-registry.json + specialization-profiles
-  │   → calibrates routing (overrides static AGENTS.md table if evidence is strong)
+  ├── Lazy: recompute specialization-profile/ from active skill-registry.json
+  ├── Lazy: migrate registry entries > 6 months to archive
   │
-  ├── Tech Lead writes session-context.json with initial conventions
+  ├── Tech Lead reads profiles → calibrates routing:
+  │   - sample_size >= 3: preliminary suggestion (labeled)
+  │   - sample_size >= 10: stable suggestion
+  │   - worsened/accepted > 0.3: flag threshold recalibration needed
   │
-  ├── /dispatch → agents execute in worktrees
+  ├── Tech Lead writes session-context.json (conventions, constraints for this session)
   │
-  ├── Post-dispatch (existing):
-  │   ├── Tier 1 classification: git diff --stat (external signal)
-  │   ├── Tier 2 cross-check: AGENT_RESULT.files_changed
-  │   └── Tier 3 advisory: prose patterns
+  ├── /dispatch → agents execute in isolated worktrees
+  │   - Agents receive session-context.json "Prior context" block in task prompts
+  │   - Agents may emit CONTEXT_PROPOSAL: blocks (NOT writes — just proposals)
   │
-  ├── Post-dispatch (NEW v3):
-  │   ├── Append outcome to skill-registry.json
-  │   ├── Append task summary to session-context.json
-  │   ├── If outcome == success + novel solution: snapshot to skills/<hash>.json
-  │   └── If outcome == failure: Tech Lead may suggest prompt-patches.json addition
+  ├── Post-dispatch (existing Tier 1/2/3 classification — unchanged)
   │
-  └── Session end: update specialization-profile/<agent>.json from registry aggregation
+  ├── Post-dispatch (NEW v3 additions):
+  │   ├── Review CONTEXT_PROPOSAL blocks → Tech Lead accept/reject → update session-context.json
+  │   ├── Append outcome entry to skill-registry.json
+  │   ├── If recovery trajectory: capture to trajectories/recovery-<uuid>.json
+  │   ├── If success + APPROVE: capture to trajectories/success-<uuid>.json
+  │   ├── If success + novel: snapshot to skills/<task-type>-<hash>.json
+  │   └── Update dispatch_count + validated_successes on active prompt-patches
+  │
+  └── Session end (or periodic):
+      ├── Update specialization-profile/ from registry delta
+      └── Check: any patches graduated (>= 5 successes)? → flag for AGENTS.md promotion
 ```
 
 ---
 
-## The Five Debate Questions — Claude's Positions
+## The Five Debate Questions — Final Positions
 
-### Q1: Is Option A sufficient, or does it plateau?
-
-**Position: Option A is sufficient for 50+ dispatch cycles.** The plateau argument assumes
-that the improvement signal is richer than a JSON file can capture. But in VN-Squad's
-context, the highest-value signal is coarse: which agent succeeds on which task type, at
-what rate, after what kind of failure. This is fully captured in `skill-registry.json`.
-
-The plateau risk is real but occurs at a different horizon: after ~200 sessions, you may
-want learned routing (MoA-style) rather than threshold-based routing. Option A is designed
-to accumulate the data that would train such a router — it is not incompatible with Option
-B/C, it just defers their infrastructure cost to when the data justifies it.
+### Q1: Is Option A sufficient?
+Yes, for the defined scope and the plateau milestone is now falsifiable: >= 3 routing
+overrides accepted across distinct task types within 50 dispatch cycles.
 
 ### Q2: Does Option B violate the lightweight principle?
+Yes, for WSL2/single-developer context. Option B is valid for Linux/macOS team deployments.
+This is now scoped correctly in the design rather than dismissing Option B paradigmatically.
 
-**Position: Yes, in VN-Squad's specific environment, and the principle is worth preserving.**
-WSL2 background daemons are fragile across Windows restarts. The value of VN-Squad's
-"plain JSON + markdown" constraint is auditability and zero-ops maintenance: there is no
-database to migrate, no broker to restart, no schema to version-control separately. Option A
-preserves this. Option B is appropriate for teams with dedicated infra; VN-Squad's target
-context is a single developer or small team running Claude Code locally.
+### Q3: Minimum viable loop for 50 cycles
+Three artifacts + revised CONTEXT_PROPOSAL protocol:
+1. `skill-registry.json` + time-bucketed archive
+2. `session-context.json` with Tech Lead-gated write path (CONTEXT_PROPOSAL)
+3. `specialization-profile/<agent>.json` (lazy recomputed from registry)
 
-### Q3: Minimum viable self-improvement loop for 50 cycles
-
-**Position:** Three artifacts, one extended protocol:
-1. `skill-registry.json` — every outcome logged (closes the feedback loop)
-2. `session-context.json` — prior task summaries injected into subsequent dispatch prompts
-3. `specialization-profile/<agent>.json` — routing calibration (auto-suggestion; human approves)
-
-And one AGENT_RESULT extension: add `quality_signals.review_verdict` to the existing
-protocol. This captures the quality dimension without changing the trust tier model.
-
-Observable gains appear as soon as Codex is auto-suggested over Gemini for code tasks
-where the registry shows Gemini's EmptyDiff rate > 50%. That is a routing improvement
-with zero new infrastructure — just a Tech Lead reading a JSON file.
+Plus: `prompt-patches.json` with lifecycle (bounded, conflict-checked, graduation path).
 
 ### Q4: Automatic routing vs recommendation requiring approval
+Recommendation at sample_size >= 3 (preliminary) and >= 10 (stable). Auto-adjustment of
+the threshold itself requires Tech Lead approval (triggered by `worsened/accepted > 0.3`).
 
-**Position: Recommendation requiring Tech Lead approval until sample_size >= 10.**
-
-Below 10 samples, the routing evidence is too thin to trust. Auto-routing on 3 data points
-risks compounding errors. Above 10 samples with `success_rate < 0.5` on a task type, the
-system PROPOSES a routing override: "Gemini has succeeded on 2/8 code tasks — recommend
-routing to Codex." The Tech Lead confirms.
-
-This is consistent with the v2 principle: for unverifiable or thin-evidence decisions,
-human approval is the safeguard. Routing changes are consequential (they change which
-agent receives which budget); they should not auto-apply on sparse data.
-
-### Q5: Where does the "agents improving agents" loop close?
-
-**Position: At the Tech Lead + human approval boundary. Always.**
-
-Agents produce outputs. The Tech Lead observes, classifies (via tiered trust), and decides.
-Prompt patches (`prompt-patches.json`) are suggested by the Tech Lead after observing a
-failure pattern but require human approval before being applied to future dispatches.
-Specialization profiles are updated from registry data but routing changes from them are
-proposed, not automatic.
-
-No agent modifies another agent's definition. No agent modifies its own skill file.
-The improvement loop is: agent output → tiered trust classification → Tech Lead proposes →
-human approves → registry updated → future routing calibrated. The closure point is human
-judgment. This is the correct design for a system where `CompileRed` and `TestFail` are
-already gated on human judgment — consistency demands the improvement loop follow the same
-trust model.
+### Q5: Where does the improvement loop close?
+At the Tech Lead + human approval boundary, always. CONTEXT_PROPOSAL, routing suggestions,
+patch graduation, and AGENTS.md promotion all require explicit Tech Lead action. Agents
+improve their outputs; the improvement loop for the system itself is human-gated.
 
 ---
 
 ## Key Tradeoffs
 
-### T1: Option A plateau vs Option B infrastructure cost
-Option A plateaus at threshold-based routing; Option B enables learned routing at the cost
-of daemon fragility and ops complexity in WSL2. **Decision: Option A for v3; design
-skill-registry schema to be compatible with a future MoA-style router if accumulated data
-justifies it.**
+### T1: Option A plateau vs Option B infrastructure
+Option A is scoped to WSL2/single-developer. Teams on Linux/macOS should revisit Option B
+at v3.1. The `skill-registry.json` schema is designed to be forward-compatible with a
+future MoA-style router (it captures all signals a router would need).
 
-### T2: Auto-routing vs human-approved routing
-Auto-routing on empirical data is faster but risks compounding errors on thin samples.
-Human-approved routing is slower but consistent with v2's trust model.
-**Decision: recommendation-with-approval below sample_size 10; revisit threshold at v3.1.**
+### T2: Routing recommendation vs auto-routing
+Preliminary at n=3, stable at n=10. Threshold recalibration is human-approved but
+system-triggered. Consistent with v2's trust model.
 
-### T3: Agents as READ-ONLY consumers of session-context.json
-Allowing agents to write to session-context.json enables richer sharing but opens a
-self-report trust problem (an agent could write false context to influence a sibling).
-**Decision: Tech Lead is the sole writer. Agents are read-only consumers via task prompt
-injection. This preserves the Tier 1 independence principle.**
+### T3: CONTEXT_PROPOSAL (agent-proposed, Tech Lead-approved writes)
+Agents propose; humans approve. Self-report trust problem is preserved as advisory only.
+No agent can unilaterally write to shared context.
 
-### T4: prompt-patches.json as the prompt evolution mechanism
-Mutating protected skill files (CLAUDE.md, AGENTS.md) risks identity corruption.
-prompt-patches.json is a separate, non-protected artifact that holds additive constraints
-merged at dispatch time. Human must approve each patch addition.
-**Decision: prompt-patches.json pattern adopted. Protected files never mutated.**
+### T4: prompt-patches.json with lifecycle
+Bounded (20 active per agent), conflict-checked (same category requires explicit resolution),
+graduated to AGENTS.md with human approval after 5 validated successes.
 
-### T5: Trajectory capture scope
-Recording every dispatch sequence in `trajectories/` enables SE-Agent-style replay and
-learning. But trajectories grow unbounded. Without pruning, the directory becomes noise.
-**Decision: Capture trajectories only for tasks with `outcome == success` AND
-`quality_signals.review_verdict == APPROVE`. This keeps the library high-signal.**
+### T5: Trajectory capture includes failure-recovery chains
+Both success and failure-recovery trajectories captured. Duplicate failures (3rd+ same
+error) and no-recovery failures excluded (noise, not signal).
+
+### T6: Registry is append-log; profiles are pre-aggregated summaries
+Queries go to `specialization-profile/`, not raw registry. Registry is the source of truth;
+profiles are the lazy-computed read optimization.
 
 ---
 
-## Open Questions
+## Open Questions (Narrowed)
 
-1. **Registry size management:** `skill-registry.json` grows unbounded. When should entries
-   be pruned or archived? Proposal: rotate at 500 entries, archive to
-   `skill-registry-<year>.json`.
+1. **CONTEXT_PROPOSAL key collision:** If two agents in the same dispatch propose conflicting
+   values for the same context key, which takes precedence? Proposal: last-write-wins in
+   Tech Lead review order; both proposals are presented side-by-side for decision.
 
-2. **session-context.json lifecycle:** Does `session-context.json` reset on every new Claude
-   Code session, or persist across sessions? If it persists, stale conventions from a prior
-   feature branch could corrupt a new session. Proposal: reset on session start; seed from
-   the current branch's last trajectory if one exists.
+2. **session-context.json session reset:** Reset on every new Claude Code session (seed from
+   last successful trajectory's conventions if one exists for the current branch). Stale
+   conventions from a prior feature branch must not contaminate a new session.
 
-3. **Routing threshold calibration:** Is `sample_size >= 10` the right threshold for
-   auto-suggestion? Too low risks noise; too high delays useful recommendations.
-   Proposal: start at 10; adjust based on observed false-positive rate over first 100 cycles.
+3. **Cross-vendor skill transfer:** When `skills/<hash>.json` captures a solution pattern,
+   can it be offered to a different vendor on a similar task? Requires task similarity
+   scoring. Proposal: defer to v3.1; tag skills with structured task metadata in v3 to
+   enable this later.
 
-4. **Cross-vendor skill transfer:** When `skills/<hash>.json` captures a successful solution
-   pattern, can it be offered as context to a different vendor agent on a similar task?
-   This is the AgentFactory pattern — but requires task similarity scoring. Is cosine
-   similarity on task description sufficient, or does this need structured task tagging?
-
-5. **Improvement validation:** Who decides that a prompt patch has improved outcomes?
-   Proposal: require 5 successes with the patch active before the patch is "graduated"
-   from patch to permanent AGENTS.md update (requiring explicit human approval of the
-   AGENTS.md change).
+4. **Patch promotion to AGENTS.md:** A graduated patch requires human approval to become
+   a permanent constraint. Who reviews it? The Tech Lead in the next session. The flag
+   persists in `prompt-patches.json` under `status: graduated` until explicitly promoted
+   or explicitly rejected (human decision logged in the patch entry).
