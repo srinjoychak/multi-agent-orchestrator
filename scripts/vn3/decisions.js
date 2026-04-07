@@ -1,4 +1,6 @@
-// scripts/vn3/decisions.js (stub — full implementation in Task 7)
+// scripts/vn3/decisions.js
+// Atomic append to .vn-squad/decisions.json — audit log for all Tech Lead decisions.
+
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -33,4 +35,11 @@ export function appendDecision(entry) {
 export function readDecisions() {
   if (!existsSync(DECISIONS_PATH)) return [];
   return JSON.parse(readFileSync(DECISIONS_PATH, 'utf8')).entries;
+}
+
+const isMain = process.argv[1] && (new URL(import.meta.url)).pathname === (process.argv[1].startsWith('/') ? process.argv[1] : '/' + process.argv[1]);
+if (isMain && process.argv[2] === '--list') {
+  const entries = readDecisions();
+  if (entries.length === 0) { console.log('No decisions yet'); process.exit(0); }
+  entries.forEach(e => console.log(`${e.timestamp} [${e.type}] agent=${e.agent ?? '-'} task_type=${e.task_type ?? '-'}`));
 }
