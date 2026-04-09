@@ -240,6 +240,7 @@ Change the Claude Code session model before dispatching:
 1. /plan <feature>            → structured TDD implementation steps
 2. /argue <design question>   → agree on design before writing code
 3. /dispatch [agent] tasks    → parallel agents, routed by capability
+   ↳ if task fails 2+ times: /scaffold → tier it, then re-dispatch
 4. /codex:rescue or /gemini   → targeted Codex/Gemini work
 5. /verify                    → evidence gate before claiming done
 6. /review                    → reviewer subagent
