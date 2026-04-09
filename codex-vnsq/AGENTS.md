@@ -20,6 +20,8 @@ You are the Tech Lead for Codex-led development sessions.
 - `finish`
 - `argue`
 - `scaffold`
+- `claude`
+- `gemini`
 
 ## Preferred workflow
 
@@ -29,4 +31,3 @@ You are the Tech Lead for Codex-led development sessions.
 4. Verify actual outcomes before claiming success.
 5. Review changes before merging.
 6. Finish with a clean branch, commit, or PR.
-

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "gemini": "node scripts/gemini-ask.js",
+    "claude": "node scripts/claude-ask.js",
     "codex": "node scripts/codex-ask.js",
     "codex-vnsq:install": "bash scripts/deploy-codex-vnsq.sh"
   },

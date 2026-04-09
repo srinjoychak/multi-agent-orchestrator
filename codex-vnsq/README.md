@@ -16,7 +16,7 @@ It provides:
 
 - a Codex Tech Lead instruction file
 - Codex-native skills for the core workflow
-- a small headless adapter for scripted Codex calls
+- headless adapters for Codex, Claude, and Gemini
 - a deploy script for installing the package into a Codex home directory or a project
 
 It does **not** replace the Claude workflow. Claude-specific files remain untouched.
@@ -37,6 +37,8 @@ The main workflow skills live under `codex-vnsq/skills/`.
 | `finish` | Verifies tests, presents completion choices, and cleans up the branch/worktree |
 | `argue` | Runs a design debate loop and keeps `DESIGN.md` clean and reviewable |
 | `scaffold` | Breaks oversized or repeatedly failing tasks into tiered subtasks |
+| `claude` | Delegates a prompt to the Claude CLI headless adapter |
+| `gemini` | Delegates a prompt to the Gemini CLI headless adapter |
 
 ---
 
@@ -47,6 +49,8 @@ The main workflow skills live under `codex-vnsq/skills/`.
 | `codex-vnsq/AGENTS.md` | Codex Tech Lead instructions |
 | `codex-vnsq/skills/*/SKILL.md` | Codex skill definitions |
 | `scripts/codex-ask.js` | Headless Codex adapter with JSON output |
+| `scripts/claude-ask.js` | Headless Claude adapter with JSON output |
+| `scripts/gemini-ask.js` | Headless Gemini adapter with JSON output |
 | `scripts/deploy-codex-vnsq.sh` | Installer for the Codex package |
 
 ---
@@ -59,7 +63,8 @@ The workflow is intentionally simple:
 2. A skill such as `plan` or `dispatch` is selected.
 3. The skill provides the procedure and guardrails for that task.
 4. The headless adapter `scripts/codex-ask.js` is available for scripted execution.
-5. The deploy script copies the package into a target Codex home or project location.
+5. The Claude and Gemini adapters are available for worker delegation from Codex.
+6. The deploy script copies the package into a target Codex home or project location.
 
 The skills are prompt-based and modular, which makes them easy to extend without changing the
 underlying runtime.
@@ -149,6 +154,20 @@ The output includes:
 - `exitCode`
 - `tokenUsage` when available
 
+### Claude worker adapter
+
+```bash
+node scripts/claude-ask.js "review src/auth/token.js for race conditions"
+```
+
+### Gemini worker adapter
+
+```bash
+node scripts/gemini-ask.js "summarize the tradeoffs of SQLite vs Postgres for this app"
+```
+
+These adapters are what `/dispatch` and `/gemini` build on when Codex is the Tech Lead.
+
 ---
 
 ## Recommended Workflow
@@ -171,7 +190,13 @@ The output includes:
 codex-vnsq/
 ├── AGENTS.md
 ├── README.md
+├── scripts/
+│   ├── claude-ask.js
+│   ├── codex-ask.js
+│   └── gemini-ask.js
 └── skills/
+    ├── claude/
+    │   └── SKILL.md
     ├── argue/
     │   └── SKILL.md
     ├── dispatch/
@@ -186,7 +211,8 @@ codex-vnsq/
     │   └── SKILL.md
     ├── verify/
     │   └── SKILL.md
+    ├── gemini/
+    │   └── SKILL.md
     └── worktrees/
         └── SKILL.md
 ```
-

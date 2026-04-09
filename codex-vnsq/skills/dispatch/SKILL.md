@@ -9,8 +9,11 @@ Use this skill when work can be split into independent tasks.
 
 ## Annotation syntax
 
-- `[codex]` route to Codex-backed execution
-- `[external]` route to another backend only when the session explicitly provides one
+| Annotation | Route |
+|---|---|
+| `[codex]` | `node scripts/codex-ask.js` |
+| `[claude]` | `node scripts/claude-ask.js` |
+| `[gemini]` | `node scripts/gemini-ask.js` |
 
 ## Rules
 
@@ -18,6 +21,7 @@ Use this skill when work can be split into independent tasks.
 - Only dispatch tasks that do not depend on each other.
 - Put each task in its own worktree if the task touches code.
 - Wait for all tasks to finish, then reconcile changes and verify the result.
+- Each routed task should include a self-contained prompt with file paths and expected output.
 
 ## Output
 
