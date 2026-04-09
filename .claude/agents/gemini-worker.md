@@ -43,7 +43,23 @@ node /path/to/scripts/gemini-ask.js "<full self-contained prompt>" --model flash
 2. If Gemini produced file content in its response but didn't write files (it can't directly write): extract the code and write the files yourself using Bash
 3. Run any verification commands specified in the task
 4. Commit: `git add -A && git commit -m "gemini: <task summary>"`
-5. Report: files written, commit hash, token usage
+5. End your response with this block — **mandatory, no exceptions**:
+
+```
+AGENT_RESULT:
+  status: success | failure
+  failure_code: EmptyDiff | CompileRed | ProviderFailure | none
+  files_created: [/absolute/path/to/new-file.md, ...]
+  files_modified: [/absolute/path/to/changed-file.yml, ...]
+  commit_hash: <git log -1 --format=%h>
+  evidence: <one line — what Gemini produced or what error occurred>
+  quality_signals:
+    review_verdict: not_run
+    test_coverage: unknown
+```
+
+If no files were written, set `files_created: []` and `files_modified: []` explicitly.
+This block is how the Tech Lead knows what you touched — do NOT bury file names in prose.
 
 ## Memory
 

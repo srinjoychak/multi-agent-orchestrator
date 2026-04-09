@@ -38,6 +38,7 @@ All skills live in `.claude/commands/` and are invoked as slash commands in Clau
 | Skill | What it does |
 |---|---|
 | `/argue <topic>` | Claude proposes a design in `DESIGN.md` → Codex challenges it → Claude refines → repeat until consensus (max 4 rounds) |
+| `/scaffold <task>` | Decompose a complex or repeatedly-failing task into tiered subtasks; gates each tier on success before the next dispatch |
 | `/gemini <prompt> [--model flash\|pro\|pro-exp]` | Research, analysis, or large-context tasks via Gemini CLI |
 
 ### From [skills.sh](https://skills.sh) — obra/superpowers
@@ -288,8 +289,9 @@ vn-squad/
 │   │   ├── codex-worker.md     ← Codex wrapper (isolation: worktree, model: haiku)
 │   │   └── vn-reviewer.md      ← Read-only code reviewer (model: sonnet, memory: project)
 │   └── commands/               ← Slash command skills
-│       ├── argue.md            ← /argue   (Claude↔Codex design debate)
-│       ├── gemini.md           ← /gemini  (direct Gemini CLI call)
+│       ├── argue.md            ← /argue    (Claude↔Codex design debate)
+│       ├── scaffold.md         ← /scaffold (curriculum task decomposition)
+│       ├── gemini.md           ← /gemini   (direct Gemini CLI call)
 │       ├── dispatch.md         ← /dispatch (agent routing with annotations)
 │       ├── plan.md             ← /plan    (skills.sh)
 │       ├── worktrees.md        ← /worktrees (skills.sh)
