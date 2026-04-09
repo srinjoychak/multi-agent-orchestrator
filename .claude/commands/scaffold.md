@@ -31,7 +31,7 @@ dispatch directly. Uses Gemini to decompose into increasingly complex sub-tasks.
 3. On Tech Lead approval: /dispatch each tier as a separate task.
    Gate each tier on success before dispatching the next.
 
-4. After all tiers succeed: aggregate into session-context.json completed_tasks.
+4. After all tiers succeed: report a summary of what was completed to the Tech Lead.
 
 ## Constraints
 - Each tier must produce independently committed, testable work
