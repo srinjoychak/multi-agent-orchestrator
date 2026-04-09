@@ -4,7 +4,9 @@
   "description": "Skills-native multi-agent orchestration for Claude Code — no Docker required",
   "type": "module",
   "scripts": {
-    "gemini": "node scripts/gemini-ask.js"
+    "gemini": "node scripts/gemini-ask.js",
+    "codex": "node scripts/codex-ask.js",
+    "codex-vnsq:install": "bash scripts/deploy-codex-vnsq.sh"
   },
   "keywords": [
     "ai-agents",
