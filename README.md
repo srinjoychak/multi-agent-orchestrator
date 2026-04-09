@@ -240,6 +240,7 @@ Change the Claude Code session model before dispatching:
 1. /plan <feature>            → structured TDD implementation steps
 2. /argue <design question>   → agree on design before writing code
 3. /dispatch [agent] tasks    → parallel agents, routed by capability
+   ↳ if task fails 2+ times: /scaffold → tier it, then re-dispatch
 4. /codex:rescue or /gemini   → targeted Codex/Gemini work
 5. /verify                    → evidence gate before claiming done
 6. /review                    → reviewer subagent
@@ -256,24 +257,83 @@ Change the Claude Code session model before dispatching:
 - **codex-plugin-cc** — for `/codex:*` commands ([openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc))
 - **Gemini CLI** (optional) — `npm install -g @google/gemini-cli` then `gemini auth`
 
-### Install
+---
+
+### Option A — Global install (recommended)
+
+Install once. All skills and agents become available in **every** Claude Code session on this machine, with no per-project setup.
+
+Claude Code loads configuration from two layers:
+
+```
+~/.claude/CLAUDE.md          ← always loaded, every session, every project
+~/.claude/commands/          ← global skills, available everywhere
+~/.claude/agents/            ← global agent definitions, available everywhere
+<project>/.claude/CLAUDE.md  ← loaded on top (project-specific overrides)
+```
+
+**Install globally:**
 
 ```bash
 git clone <this-repo>
 cd vn-squad
-# No npm install needed — zero runtime dependencies
+bash scripts/deploy-vn-squad.sh
 ```
+
+This copies all skills to `~/.claude/commands/`, agents to `~/.claude/agents/`, the Gemini adapter to `~/.claude/scripts/`, and writes `~/.claude/CLAUDE.md` with Tech Lead instructions.
+
+**Verify:**
+
+```bash
+node ~/.claude/scripts/gemini-ask.js "what is 2+2"
+ls ~/.claude/commands/   # all 9 skills present
+ls ~/.claude/agents/     # 3 agents present
+```
+
+**Adopt in a new project** — add a minimal `CLAUDE.md` to the project root:
+
+```markdown
+# Project: <your-project-name>
+
+<!-- VN-Squad v2 loaded globally from ~/.claude/ — all skills available -->
+
+## Project constraints
+- Work only within: /path/to/this/project
+- <any project-specific rules>
+```
+
+That's it. No skill copying needed. Open Claude Code in any directory and `/plan`, `/dispatch`, `/argue`, etc. all work.
+
+**Keep global install up to date** — run any time skills are updated in this repo:
+
+```bash
+bash scripts/deploy-vn-squad.sh
+```
+
+---
+
+### Option B — Per-project install
+
+Deploy skills directly into a specific project without touching `~/.claude/`:
+
+```bash
+bash scripts/deploy-vn-squad.sh /path/to/your/project
+```
+
+This copies `.claude/commands/`, `.claude/agents/`, `scripts/gemini-ask.js`, and `config/gemini-settings.json` into the target project. Skills are then available only when Claude Code is opened in that directory.
+
+---
 
 ### Verify setup
 
 ```bash
-# Test Gemini adapter
-node scripts/gemini-ask.js "what is 2+2"
+# Test Gemini adapter (global)
+node ~/.claude/scripts/gemini-ask.js "what is 2+2"
 
 # Test model flag
-node scripts/gemini-ask.js "what is 2+2" --model pro
+node ~/.claude/scripts/gemini-ask.js "what is 2+2" --model pro
 
-# Verify codex-plugin-cc
+# Verify Codex plugin
 /codex:setup
 ```
 
@@ -299,12 +359,14 @@ vn-squad/
 │       ├── verify.md           ← /verify  (skills.sh)
 │       └── review.md           ← /review  (skills.sh)
 ├── scripts/
-│   └── gemini-ask.js           ← Gemini CLI adapter (used by gemini-worker)
+│   ├── gemini-ask.js           ← Gemini CLI adapter (used by gemini-worker)
+│   └── deploy-vn-squad.sh      ← Global/project deploy script
 ├── config/
 │   └── gemini-settings.json    ← Worker-safe Gemini config
-├── CLAUDE.md                   ← Tech Lead instructions
+├── CLAUDE.md                   ← Tech Lead instructions (project-level)
 ├── AGENTS.md                   ← Subagent prompt standard
-└── agents.json                 ← Agent capabilities + sub-agent map
+├── agents.json                 ← Agent capabilities + sub-agent map
+└── uninstall-v3.md             ← Remove VN-Squad v3 from any project
 ```
 
 ---
