@@ -9,6 +9,7 @@ Use skills and collaborators — don't write all the code yourself.
 |---|---|
 | `/plan <task>` | Decompose any non-trivial task into TDD steps before starting |
 | `/dispatch <tasks>` | Run 3+ independent tasks in parallel via subagents |
+| `/scaffold <task>` | Decompose a complex or repeatedly-failing task into tiered subtasks |
 | `/argue <topic>` | Debate a design with Codex before writing code |
 | `/gemini <prompt>` | Research, analysis, or large-context tasks via Gemini CLI |
 | `/codex:rescue <task>` | Delegate an implementation or fix to Codex |
