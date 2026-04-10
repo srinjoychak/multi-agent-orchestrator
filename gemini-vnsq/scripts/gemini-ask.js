@@ -11,14 +11,19 @@
 
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
-import { mkdtemp, copyFile, rm, access } from 'node:fs/promises';
+import { mkdtemp, copyFile, rm, chmod } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const WORKER_SETTINGS = join(__dirname, '../config/gemini-settings.json');
+
+// Resolve settings path: handles both git-repo and ~/.gemini/scripts/ layout
+let WORKER_SETTINGS = join(__dirname, '../config/gemini-settings.json');
+if (!existsSync(WORKER_SETTINGS)) {
+  WORKER_SETTINGS = join(__dirname, 'gemini-settings.json');
+}
 
 // --- Parse args ---
 const args = process.argv.slice(2);
@@ -36,12 +41,20 @@ if (!prompt) {
 
 // --- Isolated auth ---
 async function isolatedGeminiAuth() {
+  // 1. Prefer API Key if available (skip credential copy)
+  if (process.env.GEMINI_API_KEY) {
+    return { tempDir: null, cleanup: async () => {} };
+  }
+
+  // 2. Fallback to isolated OAuth credentials
   const sourceDir = join(homedir(), '.gemini');
   if (!existsSync(sourceDir)) {
     return { tempDir: null, cleanup: async () => {} };
   }
 
   const tempDir = await mkdtemp(join(tmpdir(), 'gemini-auth-'));
+  await chmod(tempDir, 0o700); // Prevent other users from reading temp credentials
+
   const credFiles = ['oauth_creds.json', 'google_accounts.json', 'user_id', 'installation_id', 'state.json'];
 
   for (const f of credFiles) {
@@ -107,21 +120,39 @@ function parseOutput(stdout) {
 // --- Main ---
 const { tempDir, cleanup } = await isolatedGeminiAuth();
 
+// Signal handling for tempDir cleanup
+const doCleanup = async (code) => {
+  await cleanup();
+  if (code !== undefined) process.exit(code);
+};
+process.on('SIGINT', () => doCleanup(130));
+process.on('SIGTERM', () => doCleanup(143));
+process.on('exit', () => cleanup().catch(() => {}));
+
 const env = { ...process.env };
 if (tempDir) env.GEMINI_CONFIG_DIR = tempDir;
 
 const cliArgs = ['-p', prompt, '--approval-mode', 'yolo', '--output-format', 'json'];
 if (model) cliArgs.push('--model', model);
 
+const MAX_BUFFER = 32 * 1024 * 1024;
 const result = spawnSync('gemini', cliArgs, {
   cwd: workDir,
   env,
   encoding: 'utf8',
-  maxBuffer: 32 * 1024 * 1024,
+  maxBuffer: MAX_BUFFER,
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 
+// Check for buffer truncation
+if (result.stdout && result.stdout.length >= MAX_BUFFER * 0.9) {
+  console.error('WARNING: output near buffer limit (32MB), response may be truncated');
+}
+
 await cleanup();
+// Remove signal handlers after normal cleanup
+process.removeAllListeners('SIGINT');
+process.removeAllListeners('SIGTERM');
 
 if (result.error) {
   console.error('Failed to spawn gemini CLI:', result.error.message);

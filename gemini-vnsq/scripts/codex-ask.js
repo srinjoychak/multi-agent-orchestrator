@@ -25,17 +25,23 @@ if (!prompt) {
 const cliArgs = ['exec', '--json', prompt];
 if (model) cliArgs.push('--model', model);
 
+const MAX_BUFFER = 32 * 1024 * 1024;
 const result = spawnSync('codex', cliArgs, {
   cwd: workDir,
   env: process.env,
   encoding: 'utf8',
-  maxBuffer: 32 * 1024 * 1024,
+  maxBuffer: MAX_BUFFER,
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 
 if (result.error) {
   console.error('Failed to spawn codex CLI:', result.error.message);
   process.exit(1);
+}
+
+// Check for buffer truncation
+if (result.stdout && result.stdout.length >= MAX_BUFFER * 0.9) {
+  console.error('WARNING: output near buffer limit (32MB), response may be truncated');
 }
 
 let summary = '';

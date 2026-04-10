@@ -3,9 +3,9 @@ name: vn-plan
 description: Create comprehensive implementation plans with TDD steps, code samples, and exact commands. Use when a non-trivial task needs to be decomposed before starting.
 ---
 
-# /plan — Writing Implementation Plans
+# /vn-plan — Writing Implementation Plans
 
-*Sourced from VN-Squad v2 (Claude setup)*
+*Adapted from VN-Squad v2 (Claude-native) for Gemini CLI*
 
 Create comprehensive implementation plans assuming the engineer has minimal codebase context.
 Document everything needed: which files to modify per task, complete code samples, testing
@@ -36,7 +36,7 @@ Each step = one action (2–5 minutes):
 ```markdown
 # [Feature Name] Implementation Plan
 
-> **For agentic workers:** Use /dispatch or subagent-driven-development to implement task-by-task.
+> **For agentic workers:** Use /vn-dispatch or subagent-driven-development to implement task-by-task.
 
 **Goal:** [One sentence]
 **Architecture:** [2–3 sentences]
@@ -83,5 +83,5 @@ Never include: "TBD", "TODO", "implement later", vague guidance like "add error 
 ## Execution Handoff
 
 After saving: present two options:
-1. **Subagent-Driven** (`/dispatch`) — fresh agent per task, review between tasks
+1. **Subagent-Driven** (`/vn-dispatch`) — fresh agent per task, review between tasks
 2. **Inline Execution** — batch execution with checkpoints

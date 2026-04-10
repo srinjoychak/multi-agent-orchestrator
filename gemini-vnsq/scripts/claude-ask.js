@@ -15,27 +15,39 @@ const modelFlag = args.indexOf('--model');
 const model = modelFlag !== -1 ? args[modelFlag + 1] : null;
 const workDirFlag = args.indexOf('--work-dir');
 const workDir = workDirFlag !== -1 ? args[workDirFlag + 1] : process.cwd();
+const unsafe = args.includes('--unsafe');
 
 if (!prompt) {
-  console.error('Usage: node scripts/claude-ask.js "<prompt>" [--model sonnet|opus] [--work-dir <path>]');
+  console.error('Usage: node scripts/claude-ask.js "<prompt>" [--model sonnet|opus] [--work-dir <path>] [--unsafe]');
   process.exit(1);
 }
 
+// --- Permissions ---
+const permArgs = unsafe
+  ? ['--dangerously-skip-permissions']
+  : ['--allowedTools', 'Edit,Write,Bash,Glob,Grep,Read'];
+
 // --- Main ---
-const cliArgs = ['-p', prompt, '--output-format', 'json', '--bare', '--dangerously-skip-permissions'];
+const cliArgs = ['-p', prompt, '--output-format', 'json', '--bare', ...permArgs];
 if (model) cliArgs.push('--model', model);
 
+const MAX_BUFFER = 32 * 1024 * 1024;
 const result = spawnSync('claude', cliArgs, {
   cwd: workDir,
   env: process.env,
   encoding: 'utf8',
-  maxBuffer: 32 * 1024 * 1024,
+  maxBuffer: MAX_BUFFER,
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 
 if (result.error) {
   console.error('Failed to spawn claude CLI:', result.error.message);
   process.exit(1);
+}
+
+// Check for buffer truncation
+if (result.stdout && result.stdout.length >= MAX_BUFFER * 0.9) {
+  console.error('WARNING: output near buffer limit (32MB), response may be truncated');
 }
 
 let summary = '';

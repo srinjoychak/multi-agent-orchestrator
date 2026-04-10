@@ -3,9 +3,9 @@ name: vn-review
 description: Dispatch a code-reviewer subagent to analyze changes and provide feedback. Use after completing a feature or before merging.
 ---
 
-# /review — Request Code Review
+# /vn-review — Request Code Review
 
-*Sourced from VN-Squad v2 (Claude setup)*
+*Adapted from VN-Squad v2 (Claude-native) for Gemini CLI*
 
 Dispatch a code-reviewer subagent with focused context to catch issues before they compound.
 
@@ -34,7 +34,7 @@ HEAD_SHA=$(git rev-parse HEAD)
 
 ### 2. Dispatch reviewer subagent
 
-Use the Task tool or a worker adapter with this prompt template:
+Use a worker adapter (`claude-ask.js` or `gemini-ask.js`) with this prompt template:
 
 ```
 You are a code reviewer. Review the changes between $BASE_SHA and $HEAD_SHA.

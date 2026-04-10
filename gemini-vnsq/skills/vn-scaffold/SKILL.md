@@ -3,9 +3,9 @@ name: vn-scaffold
 description: Generate a tiered difficulty ladder for a complex or failing task. Decomposes into increasingly complex, independently testable sub-tasks.
 ---
 
-# /scaffold — Curriculum Task Decomposition
+# /vn-scaffold — Curriculum Task Decomposition
 
-*Sourced from VN-Squad v2 (Claude setup)*
+*Adapted from VN-Squad v2 (Claude-native) for Gemini CLI*
 
 Generate a tiered difficulty ladder for a task that has failed or is too complex to
 dispatch directly. Uses Gemini to decompose into increasingly complex sub-tasks.
@@ -29,7 +29,7 @@ dispatch directly. Uses Gemini to decompose into increasingly complex sub-tasks.
    Tier 4 (optional): <integration/hardening>
    ```
 
-3. On approval: `/dispatch` each tier as a separate task.
+3. On approval: `/vn-dispatch` each tier as a separate task.
    Gate each tier on success before dispatching the next.
 
 4. After all tiers succeed: report a summary of what was completed.

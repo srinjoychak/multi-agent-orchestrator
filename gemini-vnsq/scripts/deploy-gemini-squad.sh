@@ -15,7 +15,15 @@ if ! command -v zip &> /dev/null; then
 fi
 
 REPO="$(git rev-parse --show-toplevel)"
-PACKAGE_TOOL="/home/srinjcha/.nvm/versions/node/v24.14.0/lib/node_modules/@google/gemini-cli/bundle/builtin/skill-creator/scripts/package_skill.cjs"
+NPM_ROOT="$(npm root -g)"
+PACKAGE_TOOL="$NPM_ROOT/@google/gemini-cli/bundle/builtin/skill-creator/scripts/package_skill.cjs"
+
+if [ ! -f "$PACKAGE_TOOL" ]; then
+    echo "ERROR: package_skill.cjs not found at $PACKAGE_TOOL"
+    echo "Is @google/gemini-cli globally installed? (npm install -g @google/gemini-cli)"
+    exit 1
+fi
+
 GLOBAL_DIR="$HOME/.gemini"
 
 echo "Gemini-VN-Squad — Deploy"
