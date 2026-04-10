@@ -1,8 +1,8 @@
 # DESIGN.md — gemini-vnsq Implementation Review
 
 > Topic: isolatedGeminiAuth security model, --dangerously-skip-permissions in claude-ask.js,
-> hardcoded PACKAGE_TOOL path in deploy-gemini-squad.sh, spawnSync blocking for parallel
-> dispatch, and skill design correctness across vn-plan/vn-argue/vn-dispatch
+> hardcoded PACKAGE_TOOL path in deploy-gemini-squad.sh, spawnSync buffer cap,
+> and skill design correctness across vn-plan/vn-argue/vn-dispatch
 
 ---
 
@@ -15,109 +15,158 @@ before the branch ships:
 1. **isolatedGeminiAuth**: copies live OAuth credentials into a temp dir before every subprocess call.
 2. **--dangerously-skip-permissions in claude-ask.js**: unconditionally grants Claude full filesystem access when called as a worker.
 3. **Hardcoded PACKAGE_TOOL path in deploy-gemini-squad.sh**: ties the deploy script to a single machine's NVM layout.
-4. **spawnSync for parallel dispatch**: blocks the Node.js event loop; defeats the stated parallelism goal in `/vn-dispatch`.
-5. **Skill completeness**: `vn-argue` delegates to Codex for adversarial review but provides no fallback; `vn-plan` TDD constraints are well-specified; `vn-dispatch` lacks a result-merging step.
+4. **spawnSync 32MB buffer cap**: silently truncates large responses; no streaming fallback.
+5. **Skill completeness**: `vn-argue` has no Codex-unavailability fallback; `vn-dispatch` has no defined process-tracking or result-merging protocol.
 
 ---
 
-## Proposed Approach
+## Proposed Approach (Round 2 — responding to Codex findings)
 
-### 1. isolatedGeminiAuth — ACCEPT WITH AMENDMENT
+### 1. isolatedGeminiAuth — REVISE (Codex finding: high)
 
-The intent (subprocess credential isolation) is correct. Gemini CLI reads `GEMINI_CONFIG_DIR`
-and isolating credentials prevents one worker from polluting another's auth state.
+**Codex position:** Copying live OAuth tokens is fundamentally unsafe; signal-handler cleanup
+does not protect against SIGKILL or host crash; long-lived credentials can be exfiltrated.
 
-**Risk:** temp dir holds live OAuth tokens. If cleanup() is skipped (e.g. process killed mid-run),
-tokens persist until OS temp cleanup.
+**Claude response — CONCEDE on principle, DEFEND on mechanism:**
 
-**Proposed fix:**
-- Add a `SIGINT`/`SIGTERM` signal handler in gemini-ask.js that calls `cleanup()` before exit.
-- Set `mode 0700` on the temp dir at creation (mkdtemp does not guarantee this).
-- Document that the copied credentials are read-only replicas; workers cannot re-auth.
+Codex is correct that the exposure window is not fully closable with signal handlers alone.
+"Do not copy creds at all" is not immediately actionable without Gemini CLI supporting
+per-process short-lived tokens (which it does not in the current API).
 
-### 2. --dangerously-skip-permissions — REVISE
+**Revised approach:**
+- **Preferred path:** If `GEMINI_API_KEY` is set in the environment, pass it directly to the
+  subprocess and skip the config-dir copy entirely. API key auth has a narrow, revocable scope
+  and no session state that can be replayed.
+- **Fallback (OAuth only):** If only OAuth is available, keep the copy pattern but:
+  - Chmod the temp dir to `0700` immediately after `mkdtemp`.
+  - Install `SIGINT`/`SIGTERM` handlers before `spawnSync`.
+  - Add `process.on('exit', cleanup)` to catch non-signal exits.
+  - Document explicitly: "Prefer `gemini auth --api-key` over OAuth to reduce credential
+    footprint when using gemini-vnsq workers."
+- **Out of scope for this PR:** Ephemeral per-run auth tokens require Gemini CLI API surface
+  that does not yet exist. Track as a follow-up.
 
-`claude-ask.js:25` passes `--dangerously-skip-permissions` unconditionally. This is appropriate
-when Claude Code itself is the Tech Lead (it controls the session). It is **not** appropriate
-when `claude-ask.js` is a subprocess worker called from Gemini.
+### 2. --dangerously-skip-permissions — REVISE (Codex finding: critical — AGREED)
 
-A worker dispatched by `/vn-dispatch` may be handed an adversarial prompt (e.g. injected via
-a file it reads). With `--dangerously-skip-permissions`, that worker has unrestricted FS access.
+`claude-ask.js:25` passes `--dangerously-skip-permissions` unconditionally. When Claude is
+a headless worker, a prompt-injected or malicious task gets unrestricted filesystem and shell
+access under the user's account.
 
-**Proposed fix:**
-- Default to `--allowedTools Edit,Write,Bash,Glob,Grep` (sufficient for implementation tasks).
-- Expose `--unsafe` flag in `claude-ask.js` so callers that genuinely need full access can opt in.
-- Document the permission model in README.
+**Agreed fix:**
+```js
+const unsafe = args.includes('--unsafe');
+const permArgs = unsafe
+  ? ['--dangerously-skip-permissions']
+  : ['--allowedTools', 'Edit,Write,Bash,Glob,Grep,Read'];
 
-### 3. Hardcoded PACKAGE_TOOL path — REJECT current approach
-
-`deploy-gemini-squad.sh:18`:
-```bash
-PACKAGE_TOOL="/home/srinjcha/.nvm/versions/node/v24.14.0/lib/node_modules/@google/gemini-cli/bundle/builtin/skill-creator/scripts/package_skill.cjs"
+const cliArgs = ['-p', prompt, '--output-format', 'json', '--bare', ...permArgs];
 ```
 
-This is a fully qualified path to a specific user's NVM layout. The script will fail for any
-other developer (or if Node is upgraded). This is a critical portability regression.
+- Default: scoped tool allowlist sufficient for all implementation, test-writing, and docs tasks.
+- `--unsafe`: explicit opt-in flag for callers that genuinely need full access.
+- README must document: "worker subagents run in restricted mode by default."
 
-**Proposed fix:**
-- Use `$(npm root -g)/@google/gemini-cli/bundle/builtin/skill-creator/scripts/package_skill.cjs`
-  as the resolution strategy.
-- Add a pre-flight check: if the resolved path does not exist, print an actionable error and exit.
-- Alternatively, if the Gemini CLI exposes a packaging command, prefer that over the internal CJS path.
+### 3. Hardcoded PACKAGE_TOOL path — REJECT (Codex finding: high — AGREED)
 
-### 4. spawnSync for parallel dispatch — REVISE
+**Agreed fix for `deploy-gemini-squad.sh`:**
+```bash
+PACKAGE_TOOL="$(npm root -g 2>/dev/null)/@google/gemini-cli/bundle/builtin/skill-creator/scripts/package_skill.cjs"
 
-`gemini-ask.js`, `claude-ask.js`, and `codex-ask.js` all use `spawnSync`. This is correct for
-a single sequential call (e.g. `/vn-gemini` or `/vn-argue`'s Codex review step).
+if [ ! -f "$PACKAGE_TOOL" ]; then
+  echo "ERROR: Gemini skill packager not found at: $PACKAGE_TOOL"
+  echo "Ensure @google/gemini-cli is installed globally: npm install -g @google/gemini-cli"
+  exit 1
+fi
+```
 
-It is **incompatible** with `/vn-dispatch`'s stated goal: "spawn a background shell process
-with `is_background: true`". The SKILL.md for vn-dispatch correctly tells Gemini to use
-background shells — the scripts themselves are only called one at a time, so `spawnSync` is
-fine **if** each invocation is a separate background process.
+Also validate that `gemini` CLI is on PATH before packaging.
 
-The real risk is the `maxBuffer: 32MB` cap: a large Gemini response (e.g. full codebase diff)
-will silently truncate. Use `spawn` + streaming instead, or at minimum log a warning when
-`result.stdout.length` approaches the cap.
+### 4. spawnSync + 32MB buffer — REVISE (Codex finding: medium — PARTIAL AGREEMENT)
 
-**Proposed fix:**
-- Keep `spawnSync` for the simple case.
-- Add a buffer-overflow guard: if `stdout.length >= maxBuffer * 0.9`, emit a warning to stderr.
-- Document that true parallelism is achieved by the caller (Gemini) running multiple background
-  processes, not by the scripts themselves.
+**Codex position:** Switch to streaming (`spawn`) with chunked handling.
+**Claude position:** Full streaming rewrite is out of scope for this PR; the call pattern
+(one blocking script call per background process) is intentional.
 
-### 5. Skill Design Correctness
+**Pragmatic fix agreed for this PR:**
+```js
+const MAX_BUFFER = 32 * 1024 * 1024;
+const result = spawnSync('gemini', cliArgs, { ..., maxBuffer: MAX_BUFFER });
 
-**vn-plan** — Well-structured. TDD constraints (write failing test → verify fails → implement →
-verify passes → commit) are explicit and complete. Prohibited content list prevents placeholder
-drift. APPROVE as-is.
+if (result.stdout && result.stdout.length >= MAX_BUFFER * 0.9) {
+  process.stderr.write(
+    `WARNING: output near 32MB buffer limit (${result.stdout.length} bytes). ` +
+    `Response may be truncated. Consider splitting your prompt.\n`
+  );
+}
+if (result.error?.code === 'ENOBUFS') {
+  process.stderr.write('ERROR: output exceeded 32MB buffer. Prompt must be split.\n');
+  process.exit(2);
+}
+```
 
-**vn-argue** — Critical gap: Step 4 calls `codex-ask.js` and expects structured JSON back,
-but provides no fallback if Codex is unavailable or returns non-JSON output. The Claude-native
-`/argue` skill handles this with an explicit guard ("If Codex is unavailable, STOP"). The
-Gemini version does not. Additionally, the max rounds are 3 (Gemini skill) vs 4 (Claude skill) —
-minor inconsistency but worth aligning.
+Streaming refactor tracked as follow-up.
 
-**vn-dispatch** — The dispatch loop (Step 4) says "Read each agent's summary from the console
-output" but does not specify how Gemini tracks background process IDs or waits for completion.
-This is implementation-vague and will cause silent failures if an agent crashes mid-task.
+### 5. Skill Design — vn-argue and vn-dispatch (Codex finding: medium — AGREED)
+
+**vn-argue failure handling (REVISE):**
+
+Add to `vn-argue/SKILL.md` Step 3:
+```
+After running codex-ask.js:
+  - If exit code != 0: STOP. Tell the user: "Codex unavailable — check codex-cli installation.
+    Options: (1) retry after `codex login`, (2) proceed with Gemini self-critique."
+  - If output cannot be parsed as JSON: STOP with the same message.
+  - Never silently continue with a malformed review payload.
+```
+
+**vn-dispatch process tracking (REVISE):**
+
+Replace the vague "monitor background processes" with a concrete protocol:
+```
+For each background task:
+  - Generate TASK_ID=$(date +%s%N | md5sum | head -c 8)
+  - Run: node <worker>.js ... > /tmp/vnsq-${TASK_ID}.json 2>&1
+  - Record: echo "$TASK_ID  $AGENT  $DESCRIPTION" >> /tmp/vnsq-manifest.txt
+
+Completion poll (every 5s, timeout 300s):
+  - For each TASK_ID: check /tmp/vnsq-${TASK_ID}.json is non-empty and valid JSON
+  - If any result missing or exitCode != 0: report failure per task
+  - Run full test suite after all tasks complete
+```
+
+### 6. vn-plan — APPROVE AS-IS
+
+TDD constraints are explicit and complete. Prohibited-content list prevents placeholder drift.
 
 ---
 
-## Key Tradeoffs
+## Key Tradeoffs (Round 2)
 
-| Decision | Pro | Con |
+| Decision | Status | Rationale |
 |---|---|---|
-| spawnSync per-script | Simple, synchronous, easy to test | 32MB buffer cap; no streaming |
-| isolatedGeminiAuth copy | True auth isolation | Token exposure window if cleanup skipped |
-| --dangerously-skip-permissions | Fewer permission prompts | Attack surface for prompt injection |
-| Hardcoded PACKAGE_TOOL | Works on author's machine | Breaks on every other machine |
-| Gemini as Tech Lead | Mirrors Claude-native pattern | Gemini cannot use Task tool natively; dispatch is shell-script-based |
+| spawnSync + overflow warning | ACCEPT | Streaming refactor is follow-up; warning ships now |
+| isolatedGeminiAuth: prefer API key, OAuth fallback + chmod 700 + SIGTERM | ACCEPT | Best available mitigation; ephemeral worker tokens not yet supported by Gemini CLI |
+| Scoped allowlist + `--unsafe` opt-in | AGREED (both) | Correct trust model for subprocess workers |
+| Dynamic PACKAGE_TOOL resolution | AGREED (both) | Required for portability |
+| vn-argue hard-stop on Codex failure | AGREED (both) | Silent-continue is never safe in a debate loop |
+| vn-dispatch temp-file manifest protocol | AGREED (both) | Deterministic; works with any shell background mechanism |
 
 ---
 
-## Open Questions
+## Open Questions (Resolved)
 
-1. Does the Gemini CLI expose a stable `gemini skills package` command, or is `package_skill.cjs` the only path?
-2. Can `claude-ask.js` default to a restricted allowlist without breaking any current `/vn-dispatch` use cases?
-3. Should `vn-argue` (Gemini) hard-stop or fall back to a Gemini self-critique when Codex is unavailable?
-4. Is there a portable way to detect `GEMINI_CONFIG_DIR` support across Gemini CLI versions?
+1. **`gemini skills package` command?** — No stable CLI surface found. `npm root -g` resolution is the agreed workaround.
+2. **`claude-ask.js` allowlist vs current use cases?** — Scoped allowlist covers all documented `/vn-dispatch` task types. `--unsafe` is the escape hatch.
+3. **`vn-argue` fallback when Codex is unavailable?** — Hard stop with explicit user prompt. No silent self-critique (defeats the adversarial purpose).
+4. **Portable `GEMINI_CONFIG_DIR` detection?** — Present from Gemini CLI 0.x onward; document minimum required version in README.
+
+---
+
+## Ship Checklist
+
+- [ ] `claude-ask.js`: replace `--dangerously-skip-permissions` with allowlist + `--unsafe` flag
+- [ ] `deploy-gemini-squad.sh`: dynamic PACKAGE_TOOL resolution with pre-flight validation
+- [ ] `gemini-ask.js`: buffer overflow warning + ENOBUFS hard error; SIGTERM cleanup; chmod 700 tmpdir; prefer GEMINI_API_KEY path
+- [ ] `vn-argue/SKILL.md`: add Codex-unavailability guard (Step 3)
+- [ ] `vn-dispatch/SKILL.md`: add temp-file manifest protocol for result tracking
+- [ ] `README.md`: document worker permission model and GEMINI_API_KEY preference
