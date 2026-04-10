@@ -28,7 +28,7 @@ const permArgs = unsafe
   : ['--allowedTools', 'Edit,Write,Bash,Glob,Grep,Read'];
 
 // --- Main ---
-const cliArgs = ['-p', prompt, '--output-format', 'json', '--bare', ...permArgs];
+const cliArgs = ['-p', prompt, '--output-format', 'json', ...permArgs];
 if (model) cliArgs.push('--model', model);
 
 const MAX_BUFFER = 32 * 1024 * 1024;
