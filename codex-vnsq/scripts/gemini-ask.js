@@ -1,21 +1,23 @@
 #!/usr/bin/env node
 /**
- * gemini-ask.js - Gemini adapter for Codex-VNSQ
+ * gemini-ask.js — Lightweight Gemini CLI adapter for Codex-VN-Squad
  *
- * Calls the Gemini CLI directly with isolated auth and returns a JSON
- * envelope suitable for downstream parsing.
+ * Calls the Gemini CLI directly with isolated auth.
  */
 
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
-import { mkdtemp, copyFile, rm, access } from 'node:fs/promises';
+import { mkdtemp, copyFile, rm, chmod } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const WORKER_SETTINGS = join(__dirname, '../../config/gemini-settings.json');
+let WORKER_SETTINGS = join(__dirname, '../config/gemini-settings.json');
+if (!existsSync(WORKER_SETTINGS)) {
+  WORKER_SETTINGS = join(__dirname, '../../config/gemini-settings.json');
+}
 
 const args = process.argv.slice(2);
 const promptIdx = args.findIndex((a) => !a.startsWith('--'));
@@ -31,12 +33,17 @@ if (!prompt) {
 }
 
 async function isolatedGeminiAuth() {
+  if (process.env.GEMINI_API_KEY) {
+    return { tempDir: null, cleanup: async () => {} };
+  }
+
   const sourceDir = join(homedir(), '.gemini');
   if (!existsSync(sourceDir)) {
     return { tempDir: null, cleanup: async () => {} };
   }
 
   const tempDir = await mkdtemp(join(tmpdir(), 'gemini-auth-'));
+  await chmod(tempDir, 0o700);
   const credFiles = ['oauth_creds.json', 'google_accounts.json', 'user_id', 'installation_id', 'state.json'];
 
   for (const f of credFiles) {
@@ -61,18 +68,18 @@ function parseOutput(stdout) {
   if (!trimmed) return { summary: '', raw: '' };
 
   let parsed = null;
-  try { parsed = JSON.parse(trimmed); } catch {}
+  try { parsed = JSON.parse(trimmed); } catch { /* try next */ }
 
   if (!parsed && trimmed.includes('\n')) {
     for (const line of trimmed.split('\n').reverse()) {
-      try { parsed = JSON.parse(line); break; } catch {}
+      try { parsed = JSON.parse(line); break; } catch { /* try next */ }
     }
   }
 
   if (!parsed) {
     const s = trimmed.indexOf('{'), e = trimmed.lastIndexOf('}');
     if (s !== -1 && e > s) {
-      try { parsed = JSON.parse(trimmed.slice(s, e + 1)); } catch {}
+      try { parsed = JSON.parse(trimmed.slice(s, e + 1)); } catch { /* fail */ }
     }
   }
 
@@ -99,6 +106,14 @@ function parseOutput(stdout) {
 
 const { tempDir, cleanup } = await isolatedGeminiAuth();
 
+const doCleanup = async (code) => {
+  await cleanup();
+  if (code !== undefined) process.exit(code);
+};
+process.on('SIGINT', () => doCleanup(130));
+process.on('SIGTERM', () => doCleanup(143));
+process.on('exit', () => cleanup().catch(() => {}));
+
 const env = { ...process.env };
 if (tempDir) env.GEMINI_CONFIG_DIR = tempDir;
 
@@ -113,7 +128,13 @@ const result = spawnSync('gemini', cliArgs, {
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 
+if (result.stdout && result.stdout.length >= (32 * 1024 * 1024) * 0.9) {
+  console.error('WARNING: output near buffer limit (32MB), response may be truncated');
+}
+
 await cleanup();
+process.removeAllListeners('SIGINT');
+process.removeAllListeners('SIGTERM');
 
 if (result.error) {
   console.error('Failed to spawn gemini CLI:', result.error.message);
@@ -130,4 +151,3 @@ const output = {
 
 process.stdout.write(JSON.stringify(output, null, 2) + '\n');
 process.exit(result.status ?? 0);
-

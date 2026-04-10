@@ -1,218 +1,127 @@
-# Codex-VNSQ
+# Codex-VN-Squad
 
-**Skills-native multi-agent orchestration for Codex. No Docker. No servers. Just skills.**
+**Skills-native multi-agent orchestration for Codex CLI. No Docker. No servers. Just skills.**
 
-Codex leads the session, uses a compact skills pack for planning and coordination, and
-delegates only the work that should be delegated. The package mirrors the structure of the
-Claude-based workflow, but the Codex tree is self-contained and Codex-first.
-
----
-
-## What This Package Is
-
-`codex-vnsq` is the Codex-specific counterpart to the existing Claude workflow.
-
-It provides:
-
-- a Codex Tech Lead instruction file
-- Codex-native skills for the core workflow
-- headless adapters for Codex, Claude, and Gemini
-- a deploy script for installing the package into a Codex home directory or a project
-
-It does **not** replace the Claude workflow. Claude-specific files remain untouched.
+Codex, Claude Code, and Gemini CLI collaborate within your session through a curated set of
+skills — debating designs, dispatching parallel work, and reviewing each other's output.
 
 ---
 
-## Core Skills
+## Architecture
 
-The main workflow skills live under `codex-vnsq/skills/`.
+Codex-VN-Squad replicates the VN-Squad v2 orchestration model directly within Codex using
+native skills and lightweight worker adapters.
+
+| Capability | Implementation |
+|---|---|
+| Tech Lead | Codex CLI (via `codex-vnsq/AGENTS.md`) |
+| Task execution | Codex skills plus subprocess workers |
+| Design review | `vn-argue` — Codex<->Claude debate loop |
+| Claude work | `scripts/claude-ask.js` (direct CLI) |
+| Gemini work | `scripts/gemini-ask.js` (direct CLI) |
+| Isolation | Git worktrees via `vn-worktrees` |
+
+---
+
+## Skills
+
+All skills are implemented as Codex `SKILL.md` packages and installed into the local Codex
+skills catalog.
 
 | Skill | What it does |
 |---|---|
-| `plan` | Breaks a task into small, testable TDD steps with concrete file paths and verification commands |
-| `dispatch` | Splits independent work into parallel tasks with explicit routing annotations |
-| `worktrees` | Creates isolated git worktrees with baseline setup and safety checks |
-| `verify` | Requires fresh evidence before any completion claim |
-| `review` | Requests structured code review with severity-ranked findings |
-| `finish` | Verifies tests, presents completion choices, and cleans up the branch/worktree |
-| `argue` | Runs a design debate loop and keeps `DESIGN.md` clean and reviewable |
-| `scaffold` | Breaks oversized or repeatedly failing tasks into tiered subtasks |
-| `claude` | Delegates a prompt to the Claude CLI headless adapter |
-| `gemini` | Delegates a prompt to the Gemini CLI headless adapter |
+| `vn-plan <task>` | Decompose into TDD bite-sized steps with exact file paths and code samples |
+| `vn-dispatch <tasks>` | Dispatch independent tasks to parallel agents (Codex, Claude, Gemini) |
+| `vn-scaffold <task>` | Decompose a complex task into tiered subtasks |
+| `vn-argue <topic>` | Codex proposes design -> Claude challenges -> consensus loop |
+| `vn-gemini <prompt>` | Direct Gemini CLI call for research or large-context work |
+| `vn-claude <prompt>` | Direct Claude CLI call for second-opinion implementation or review |
+| `vn-worktrees` | Create isolated git worktrees for parallel work |
+| `vn-finish` | Test-verified branch completion (merge or PR) |
+| `vn-verify` | Gate: run actual verification before claiming completion |
+| `vn-review` | Request a structured code review |
 
 ---
 
-## Files
+## Agents
 
-| File or directory | Purpose |
-|---|---|
-| `codex-vnsq/AGENTS.md` | Codex Tech Lead instructions |
-| `codex-vnsq/skills/*/SKILL.md` | Codex skill definitions |
-| `scripts/codex-ask.js` | Headless Codex adapter with JSON output |
-| `scripts/claude-ask.js` | Headless Claude adapter with JSON output |
-| `scripts/gemini-ask.js` | Headless Gemini adapter with JSON output |
-| `scripts/deploy-codex-vnsq.sh` | Installer for the Codex package |
+Three specialized worker scripts handle delegation:
 
----
-
-## How It Works
-
-The workflow is intentionally simple:
-
-1. Codex reads the lead instructions in `codex-vnsq/AGENTS.md`.
-2. A skill such as `plan` or `dispatch` is selected.
-3. The skill provides the procedure and guardrails for that task.
-4. The headless adapter `scripts/codex-ask.js` is available for scripted execution.
-5. The Claude and Gemini adapters are available for worker delegation from Codex.
-6. The deploy script copies the package into a target Codex home or project location.
-
-The skills are prompt-based and modular, which makes them easy to extend without changing the
-underlying runtime.
+| Agent | Script | CLI Required |
+|---|---|---|
+| `[codex]` | `scripts/codex-ask.js` | `codex` |
+| `[claude]` | `scripts/claude-ask.js` | `claude` |
+| `[gemini]` | `scripts/gemini-ask.js` | `gemini` |
 
 ---
 
-## Usage Examples
+## Security & Isolation
 
-### Plan first
+Codex-VN-Squad uses the same defense-in-depth model as the other vendor packages:
 
-```text
-Use the `plan` skill to break this feature into testable tasks.
-```
+- **Auth Isolation**: `gemini-ask.js` prefers `GEMINI_API_KEY`. If OAuth is used, it creates a
+  `chmod 700` temp directory and cleans it up on exit and signal handling.
+- **Permission Scoping**: `claude-ask.js` defaults to a narrow allowlist
+  (`Edit,Write,Glob,Grep,Read`). Use `--unsafe` only when the delegated task genuinely needs
+  unrestricted tools.
+- **Worktree Isolation**: Each task dispatched via `vn-dispatch` should run in an isolated git
+  worktree to prevent uncommitted changes from leaking between workers.
 
-### Debate a design
+## Performance & Reliability
 
-```text
-Use the `argue` skill to decide between two implementation approaches before writing code.
-```
-
-### Dispatch parallel work
-
-```text
-Use the `dispatch` skill to split the job into independent tasks and route each one explicitly.
-```
-
-### Verify before finishing
-
-```text
-Use the `verify` skill to confirm the tests actually pass before claiming completion.
-```
-
-### Finish a branch
-
-```text
-Use the `finish` skill to verify, present options, and complete the branch cleanly.
-```
+- **Buffer Safety**: All adapters (`codex`, `claude`, `gemini`) implement a 32MB buffer guard
+  with truncation warnings.
+- **Result Tracking**: `vn-dispatch` follows a 3-file protocol
+  (`.stdout.json`, `.stderr.log`, `.exit`) for reliable task monitoring and failure diagnosis.
+- **Debate Guard**: `vn-argue` hard-stops if Claude is unavailable so Codex does not pretend a
+  design debate completed when the review step never ran.
 
 ---
 
-## Installation
+## Setup
 
 ### Prerequisites
 
-- Codex CLI installed and authenticated
-- Git available
-- Bash available
+- **Codex CLI** — installed and authenticated
+- **Claude CLI** (optional) — `npm install -g @anthropic-ai/claude-code`
+- **Gemini CLI** (optional) — `npm install -g @google/gemini-cli`
 
-### Install into a target directory
-
-```bash
-bash scripts/deploy-codex-vnsq.sh /path/to/target
-```
-
-### Install into the default Codex home
+### Installation
 
 ```bash
-bash scripts/deploy-codex-vnsq.sh
+git clone <this-repo>
+cd copilot_adapter
+bash codex-vnsq/scripts/deploy-codex-vnsq.sh
 ```
 
 The installer copies:
 
-- `AGENTS.md`
-- `README.md`
-- the Codex skill pack
-- the headless adapter
+- `codex-vnsq/AGENTS.md` -> `$CODEX_HOME/AGENTS.md`
+- `codex-vnsq/skills/*` -> `$CODEX_HOME/skills/*`
+- `codex-vnsq/scripts/*` -> `$CODEX_HOME/scripts/*`
+- `config/gemini-settings.json` -> `$CODEX_HOME/config/gemini-settings.json`
 
----
+If you pass a target path, the same layout is installed into that workspace instead of
+`$CODEX_HOME`.
 
-## Headless Codex Adapter
-
-Use the adapter when you want Codex output in a scriptable JSON envelope.
-
-```bash
-node scripts/codex-ask.js "what is 2+2"
-```
-
-Optional flags:
-
-- `--model <name>` to select a model
-- `--work-dir <path>` to run in a specific directory
-
-The output includes:
-
-- `summary`
-- `model`
-- `exitCode`
-- `tokenUsage` when available
-
-### Claude worker adapter
+### Uninstallation
 
 ```bash
-node scripts/claude-ask.js "review src/auth/token.js for race conditions"
+bash codex-vnsq/scripts/uninstall-codex-vnsq.sh
 ```
-
-### Gemini worker adapter
-
-```bash
-node scripts/gemini-ask.js "summarize the tradeoffs of SQLite vs Postgres for this app"
-```
-
-These adapters are what `/dispatch` and `/gemini` build on when Codex is the Tech Lead.
 
 ---
 
 ## Recommended Workflow
 
-```text
-1. plan      -> decompose the work
-2. argue     -> settle the design
-3. dispatch  -> split parallel work
-4. worktrees -> isolate conflicting work
-5. verify    -> prove it works
-6. review    -> catch issues early
-7. finish    -> merge or close out
-```
+1. `vn-plan <feature>` — Decompose into TDD tasks.
+2. `vn-argue <design>` — Agree on design before coding.
+3. `vn-dispatch [agent] tasks` — Parallel agents implementation.
+4. `vn-verify` — Final verification gate.
+5. `vn-finish` — Merge and cleanup.
 
 ---
 
-## Directory Layout
+## License
 
-```text
-codex-vnsq/
-├── AGENTS.md
-├── README.md
-├── scripts/
-│   ├── claude-ask.js
-│   ├── codex-ask.js
-│   └── gemini-ask.js
-└── skills/
-    ├── claude/
-    │   └── SKILL.md
-    ├── argue/
-    │   └── SKILL.md
-    ├── dispatch/
-    │   └── SKILL.md
-    ├── finish/
-    │   └── SKILL.md
-    ├── plan/
-    │   └── SKILL.md
-    ├── review/
-    │   └── SKILL.md
-    ├── scaffold/
-    │   └── SKILL.md
-    ├── verify/
-    │   └── SKILL.md
-    ├── gemini/
-    │   └── SKILL.md
-    └── worktrees/
-        └── SKILL.md
-```
+MIT

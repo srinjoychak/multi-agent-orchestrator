@@ -7,7 +7,8 @@
     "gemini": "node scripts/gemini-ask.js",
     "claude": "node scripts/claude-ask.js",
     "codex": "node scripts/codex-ask.js",
-    "codex-vnsq:install": "bash scripts/deploy-codex-vnsq.sh"
+    "codex-vnsq:install": "bash codex-vnsq/scripts/deploy-codex-vnsq.sh",
+    "codex-vnsq:uninstall": "bash codex-vnsq/scripts/uninstall-codex-vnsq.sh"
   },
   "keywords": [
     "ai-agents",

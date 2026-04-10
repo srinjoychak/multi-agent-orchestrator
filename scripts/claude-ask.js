@@ -1,11 +1,8 @@
 #!/usr/bin/env node
 /**
- * claude-ask.js - Lightweight Claude Code adapter for Codex-VNSQ
+ * claude-ask.js — Lightweight Claude CLI adapter for Codex-VN-Squad
  *
- * Calls the Claude CLI directly in headless mode and returns a JSON envelope.
- *
- * Usage:
- *   node scripts/claude-ask.js "<prompt>" [--model <model>] [--work-dir <path>]
+ * Calls the Claude CLI directly in headless mode.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -17,16 +14,19 @@ const modelFlag = args.indexOf('--model');
 const model = modelFlag !== -1 ? args[modelFlag + 1] : null;
 const workDirFlag = args.indexOf('--work-dir');
 const workDir = workDirFlag !== -1 ? args[workDirFlag + 1] : process.cwd();
+const unsafe = args.includes('--unsafe');
 
 if (!prompt) {
-  console.error('Usage: node scripts/claude-ask.js "<prompt>" [--model <model>] [--work-dir <path>]');
+  console.error('Usage: node scripts/claude-ask.js "<prompt>" [--model sonnet|opus] [--work-dir <path>] [--unsafe]');
   process.exit(1);
 }
 
-const claudeArgs = ['-p', prompt, '--output-format', 'json', '--dangerously-skip-permissions', '--no-chrome'];
-if (model) {
-  claudeArgs.push('--model', model);
-}
+const permArgs = unsafe
+  ? ['--dangerously-skip-permissions']
+  : ['--allowedTools', 'Edit,Write,Glob,Grep,Read'];
+
+const claudeArgs = ['-p', prompt, '--output-format', 'json', ...permArgs];
+if (model) claudeArgs.push('--model', model);
 
 const result = spawnSync('claude', claudeArgs, {
   cwd: workDir,
@@ -40,57 +40,32 @@ if (result.error) {
   process.exit(1);
 }
 
-function parseOutput(stdout) {
-  const trimmed = (stdout ?? '').trim();
-  if (!trimmed) return { summary: '', raw: '' };
-
-  let parsed = null;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    // fall through
-  }
-
-  if (!parsed && trimmed.includes('\n')) {
-    for (const line of trimmed.split('\n').reverse()) {
-      try {
-        parsed = JSON.parse(line);
-        break;
-      } catch {
-        // continue
-      }
-    }
-  }
-
-  if (!parsed) {
-    const start = trimmed.indexOf('{');
-    const end = trimmed.lastIndexOf('}');
-    if (start !== -1 && end > start) {
-      try {
-        parsed = JSON.parse(trimmed.slice(start, end + 1));
-      } catch {
-        // ignore
-      }
-    }
-  }
-
-  if (parsed) {
-    const summary = parsed.response ?? parsed.text ?? parsed.message ?? trimmed.slice(0, 2000);
-    const tokenUsage = parsed.usage ?? parsed.tokenUsage ?? undefined;
-    return { summary, tokenUsage, raw: trimmed };
-  }
-
-  return { summary: trimmed.slice(0, 2000), raw: trimmed };
+if (result.stdout && result.stdout.length >= (32 * 1024 * 1024) * 0.9) {
+  console.error('WARNING: output near buffer limit (32MB), response may be truncated');
 }
 
-const { summary, tokenUsage } = parseOutput(result.stdout);
+let summary = '';
+let tokenUsage = undefined;
+const exitCode = result.status;
+
+try {
+  const parsed = JSON.parse((result.stdout ?? '').trim());
+  summary = parsed.result ?? '';
+  tokenUsage = parsed.usage ? {
+    input: parsed.usage.input_tokens ?? 0,
+    output: parsed.usage.output_tokens ?? 0,
+    total: (parsed.usage.input_tokens ?? 0) + (parsed.usage.output_tokens ?? 0)
+  } : undefined;
+} catch {
+  summary = (result.stdout ?? '').trim() || (result.stderr ?? '').trim();
+}
+
 const output = {
   summary,
-  model: model ?? 'claude',
-  exitCode: result.status,
+  model: model ?? 'claude-3-5-sonnet',
+  exitCode,
   tokenUsage,
 };
 
 process.stdout.write(JSON.stringify(output, null, 2) + '\n');
 process.exit(result.status ?? 0);
-

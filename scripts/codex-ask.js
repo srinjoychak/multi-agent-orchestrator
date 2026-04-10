@@ -1,12 +1,8 @@
 #!/usr/bin/env node
 /**
- * codex-ask.js - Lightweight Codex CLI adapter for Codex-VNSQ
+ * codex-ask.js — Lightweight Codex CLI adapter for Codex-VN-Squad
  *
- * Calls the Codex CLI directly in non-interactive mode and returns a JSON
- * envelope similar to the Gemini adapter.
- *
- * Usage:
- *   node scripts/codex-ask.js "<prompt>" [--model <model>] [--work-dir <path>]
+ * Calls the Codex CLI in non-interactive (`exec`) mode.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -25,9 +21,7 @@ if (!prompt) {
 }
 
 const codexArgs = ['exec', '--json', '--full-auto', '--cd', workDir];
-if (model) {
-  codexArgs.push('--model', model);
-}
+if (model) codexArgs.push('--model', model);
 codexArgs.push(prompt);
 
 const result = spawnSync('codex', codexArgs, {
@@ -42,57 +36,39 @@ if (result.error) {
   process.exit(1);
 }
 
-function parseOutput(stdout) {
-  const trimmed = (stdout ?? '').trim();
-  if (!trimmed) return { summary: '', raw: '' };
-
-  let parsed = null;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    // fall through
-  }
-
-  if (!parsed && trimmed.includes('\n')) {
-    for (const line of trimmed.split('\n').reverse()) {
-      try {
-        parsed = JSON.parse(line);
-        break;
-      } catch {
-        // continue
-      }
-    }
-  }
-
-  if (!parsed) {
-    const start = trimmed.indexOf('{');
-    const end = trimmed.lastIndexOf('}');
-    if (start !== -1 && end > start) {
-      try {
-        parsed = JSON.parse(trimmed.slice(start, end + 1));
-      } catch {
-        // ignore
-      }
-    }
-  }
-
-  if (parsed) {
-    const summary = parsed.response ?? parsed.text ?? parsed.message ?? trimmed.slice(0, 2000);
-    const tokenUsage = parsed.usage ?? parsed.tokenUsage ?? undefined;
-    return { summary, tokenUsage, raw: trimmed };
-  }
-
-  return { summary: trimmed.slice(0, 2000), raw: trimmed };
+if (result.stdout && result.stdout.length >= (32 * 1024 * 1024) * 0.9) {
+  console.error('WARNING: output near buffer limit (32MB), response may be truncated');
 }
 
-const { summary, tokenUsage } = parseOutput(result.stdout);
+let summary = '';
+let tokenUsage = undefined;
+const exitCode = result.status;
+
+try {
+  const lines = (result.stdout ?? '').split('\n').filter((line) => line.trim());
+  for (const line of lines) {
+    const parsed = JSON.parse(line);
+    if (parsed.type === 'item.completed' && parsed.item?.type === 'agent_message') {
+      summary = parsed.item.text ?? summary;
+    }
+    if (parsed.type === 'turn.completed' && parsed.usage) {
+      tokenUsage = {
+        input: parsed.usage.input_tokens ?? 0,
+        output: parsed.usage.output_tokens ?? 0,
+        total: (parsed.usage.input_tokens ?? 0) + (parsed.usage.output_tokens ?? 0)
+      };
+    }
+  }
+} catch {
+  summary = (result.stdout ?? '').trim() || (result.stderr ?? '').trim();
+}
+
 const output = {
   summary,
-  model: model ?? 'codex',
-  exitCode: result.status,
+  model: model ?? 'gpt-5.4-mini',
+  exitCode,
   tokenUsage,
 };
 
 process.stdout.write(JSON.stringify(output, null, 2) + '\n');
 process.exit(result.status ?? 0);
-
