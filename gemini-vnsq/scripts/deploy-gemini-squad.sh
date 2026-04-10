@@ -7,6 +7,13 @@
 
 set -e
 
+# Pre-flight checks
+if ! command -v zip &> /dev/null; then
+    echo "ERROR: 'zip' utility is not installed."
+    echo "Install with: sudo apt-get install zip"
+    exit 1
+fi
+
 REPO="$(git rev-parse --show-toplevel)"
 PACKAGE_TOOL="/home/srinjcha/.nvm/versions/node/v24.14.0/lib/node_modules/@google/gemini-cli/bundle/builtin/skill-creator/scripts/package_skill.cjs"
 GLOBAL_DIR="$HOME/.gemini"
