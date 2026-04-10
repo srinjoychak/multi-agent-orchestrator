@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * codex-ask.js — Lightweight Codex CLI adapter for VN-Squad v2
+ * codex-ask.js — Lightweight Codex CLI adapter for Gemini-VN-Squad
  *
  * Calls the Codex CLI in non-interactive (exec) mode.
  */

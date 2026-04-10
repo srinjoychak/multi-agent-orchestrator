@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * claude-ask.js — Lightweight Claude CLI adapter for VN-Squad v2
+ * claude-ask.js — Lightweight Claude CLI adapter for Gemini-VN-Squad
  *
  * Calls the Claude CLI directly in headless mode.
  */
