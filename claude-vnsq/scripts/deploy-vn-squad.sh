@@ -7,7 +7,7 @@
 
 set -e
 
-REPO="$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)"
+REPO="$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)/claude-vnsq"
 GLOBAL_DIR="$HOME/.claude"
 
 echo "VN-Squad v2 — Deploy"
@@ -34,8 +34,8 @@ echo "      $(ls "$REPO/.claude/agents/"*.md | wc -l) agents installed"
 
 echo "[3/4] Installing Gemini adapter to $GLOBAL_DIR/scripts/ ..."
 mkdir -p "$GLOBAL_DIR/scripts"
-cp "$REPO/scripts/gemini-ask.js" "$GLOBAL_DIR/scripts/"
-cp "$REPO/config/gemini-settings.json" "$GLOBAL_DIR/scripts/"
+cp "$(dirname "$REPO")/scripts/gemini-ask.js" "$GLOBAL_DIR/scripts/"
+cp "$(dirname "$REPO")/config/gemini-settings.json" "$GLOBAL_DIR/scripts/"
 echo "      gemini-ask.js + gemini-settings.json installed"
 
 echo "[4/4] Writing global CLAUDE.md ..."
@@ -119,9 +119,9 @@ if [ -n "$1" ]; then
 
     echo "[C] Copying Gemini adapter to $TARGET/scripts/ ..."
     mkdir -p "$TARGET/scripts"
-    cp "$REPO/scripts/gemini-ask.js" "$TARGET/scripts/"
+    cp "$(dirname "$REPO")/scripts/gemini-ask.js" "$TARGET/scripts/"
     mkdir -p "$TARGET/config"
-    cp "$REPO/config/gemini-settings.json" "$TARGET/config/"
+    cp "$(dirname "$REPO")/config/gemini-settings.json" "$TARGET/config/"
 
     echo ""
     echo "Project deploy complete: $TARGET"
