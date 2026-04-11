@@ -66,12 +66,19 @@ Perform a controlled mini-task to verify the Tech Lead loop.
 vn-dispatch
   [codex] create hello.js with console.log('hello')
   [claude] create hello.sh with echo 'hello'
+  [gemini --model flash] summarize the task in one sentence
 ```
 
 **Verification:**
 - Both files are created independently.
 - Background processes complete successfully.
 - A summary of work is available in the `.stdout.json` artifacts.
+- The dispatcher JSON reports all three tasks with `exitCode: 0`.
+- The dispatcher created one worktree per task.
+- After inspection, manually remove the temp worktrees with:
+  - `git worktree remove --force /tmp/codex-vnsq-dispatch-test/<branch-name>`
+  - `git branch -D <branch-name>`
+  - `git worktree prune`
 
 ### Phase D: Verification & Cleanup
 
@@ -90,6 +97,7 @@ vn-dispatch
 1. **Invalid command**: verify `vn-dispatch` handles a failing agent gracefully.
 2. **Conflicting tasks**: dispatch two agents to modify the same file and verify conflict handling.
 3. **Missing CLI**: temporarily remove `claude` or `gemini` from `PATH` and confirm adapters fail with a clear error.
+4. **Dispatcher routing**: verify `vn-dispatch` routes `[claude]` and `[gemini]` annotations to the matching worker adapters.
 
 ---
 

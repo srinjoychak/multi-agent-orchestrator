@@ -7,6 +7,7 @@
     "gemini": "node scripts/gemini-ask.js",
     "claude": "node scripts/claude-ask.js",
     "codex": "node scripts/codex-ask.js",
+    "vn-dispatch": "node codex-vnsq/scripts/vn-dispatch.js",
     "codex-vnsq:install": "bash codex-vnsq/scripts/deploy-codex-vnsq.sh",
     "codex-vnsq:uninstall": "bash codex-vnsq/scripts/uninstall-codex-vnsq.sh"
   },

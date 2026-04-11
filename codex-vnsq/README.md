@@ -15,7 +15,7 @@ native skills and lightweight worker adapters.
 | Capability | Implementation |
 |---|---|
 | Tech Lead | Codex CLI (via `codex-vnsq/AGENTS.md`) |
-| Task execution | Codex skills plus subprocess workers |
+| Task execution | Codex skills plus `vn-dispatch` subprocess workers |
 | Design review | `vn-argue` — Codex<->Claude debate loop |
 | Claude work | `scripts/claude-ask.js` (direct CLI) |
 | Gemini work | `scripts/gemini-ask.js` (direct CLI) |
@@ -119,6 +119,35 @@ bash codex-vnsq/scripts/uninstall-codex-vnsq.sh
 3. `vn-dispatch [agent] tasks` — Parallel agents implementation.
 4. `vn-verify` — Final verification gate.
 5. `vn-finish` — Merge and cleanup.
+
+---
+
+## Manual Verification
+
+Use this to verify the dispatcher and all three worker adapters from a Codex-led session:
+
+```bash
+node codex-vnsq/scripts/vn-dispatch.js --worktree-root /tmp/codex-vnsq-dispatch-test <<'EOF'
+[codex] what is 1+1?
+[claude] what is 2+2?
+[gemini --model flash] what is 3+3?
+EOF
+```
+
+Expected results:
+- the command returns JSON with `success: true`
+- each task has an `exitCode: 0`
+- each task writes a matching `/tmp/vnsq-*.stdout.json`, `/tmp/vnsq-*.stderr.log`, and `/tmp/vnsq-*.exit`
+- the worktree root contains one worktree per task
+
+If you want to inspect and then remove the temporary worktrees afterward:
+
+```bash
+git worktree list
+git worktree remove --force /tmp/codex-vnsq-dispatch-test/<branch-name>
+git branch -D <branch-name>
+git worktree prune
+```
 
 ---
 
