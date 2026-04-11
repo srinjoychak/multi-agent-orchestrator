@@ -179,7 +179,7 @@ async function runTask(task, index, options) {
 }
 
 async function cleanupTaskArtifacts(results, options) {
-  if (!options.cleanup) return;
+  if (!options.cleanup && !options.force) return;
 
   for (const result of results) {
     spawnSync('git', ['worktree', 'remove', '--force', result.worktree], {
@@ -225,7 +225,7 @@ async function main() {
 
   await mkdir(worktreeRoot, { recursive: true });
 
-  const results = [];
+  const results = new Array(tasks.length).fill(null);
   const failures = [];
 
   await Promise.all(tasks.map(async (task, index) => {
@@ -234,17 +234,25 @@ async function main() {
       results[index] = result;
       if (result.exitCode !== 0) failures.push(result);
     } catch (error) {
-      failures.push({
+      const failureRecord = {
         id: `${index + 1}-${task.agent}-${slugify(task.prompt)}`,
         agent: task.agent,
         model: task.model,
         prompt: task.prompt,
         error: error instanceof Error ? error.message : String(error),
-      });
+        worktree: join(worktreeRoot, `${branchPrefix}-${task.agent}-${index + 1}-${slugify(task.prompt)}`),
+        branch: `${branchPrefix}-${task.agent}-${index + 1}-${slugify(task.prompt)}`,
+      };
+      results[index] = failureRecord;
+      failures.push(failureRecord);
     }
   }));
 
-  await cleanupTaskArtifacts(results.filter(Boolean), { cleanup });
+  // Always clean up worktrees for failed tasks; clean up successful ones only when --cleanup is set
+  const failedResults = failures.filter(f => f.worktree);
+  const successfulResults = results.filter(r => r && !failures.includes(r));
+  await cleanupTaskArtifacts(failedResults, { cleanup: true, force: true });
+  await cleanupTaskArtifacts(successfulResults, { cleanup });
 
   const output = {
     success: failures.length === 0,

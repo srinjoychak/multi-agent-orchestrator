@@ -15,7 +15,12 @@ echo "Codex-VN-Squad — Deploy"
 echo "Source: $SOURCE_DIR"
 echo ""
 
-chmod +x "$REPO/codex-vnsq/scripts/"*-ask.js "$REPO/codex-vnsq/scripts/vn-dispatch.js" "$REPO/codex-vnsq/scripts/deploy-codex-vnsq.sh" "$REPO/codex-vnsq/scripts/uninstall-codex-vnsq.sh"
+for _f in "$REPO/codex-vnsq/scripts/"*-ask.js \
+           "$REPO/codex-vnsq/scripts/vn-dispatch.js" \
+           "$REPO/codex-vnsq/scripts/deploy-codex-vnsq.sh" \
+           "$REPO/codex-vnsq/scripts/uninstall-codex-vnsq.sh"; do
+  [ -f "$_f" ] && chmod +x "$_f"
+done
 
 SCOPE="global"
 if [ -n "$1" ]; then

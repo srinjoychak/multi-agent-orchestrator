@@ -62,7 +62,7 @@ try {
 
 const output = {
   summary,
-  model: model ?? 'claude-3-5-sonnet',
+  model: model ?? 'claude (session default)',
   exitCode,
   tokenUsage,
 };
