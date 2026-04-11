@@ -5,3 +5,6 @@ node_modules/
 
 # Ephemeral Gemini auth dirs created by gemini-ask.js
 /tmp/gemini-auth-*
+
+# Uninstall docs (local reference only)
+uninstall-v3.md
