@@ -33,8 +33,12 @@ code alone does NOT confirm correctness. Verify explicitly:
 Verify skills are correctly discovered by the Antigravity CLI.
 
 1. **Deploy**: `bash agy-vnsq/scripts/deploy-agy-squad.sh`
-2. **Confirm registration**: check `~/.agents/skills/` (global) or `<target>/.agents/skills/` (workspace) contains a `vn-*` directory per skill, each copied from `agy-vnsq/skills/`.
-3. **List**: run `agy` interactively, execute `/help`, and confirm all `vn-*` skills are present — no reload step is needed since Antigravity re-scans customization roots on session start.
+2. **Confirm file placement**: check `~/.gemini/skills/` (global) or `<target>/.gemini/skills/` (workspace) contains a `vn-*` directory per skill, each copied from `agy-vnsq/skills/`.
+3. **Confirm actual discovery (do not skip — file presence alone does not prove discovery)**:
+   `agy -p "Do you have a skill called vn-agy? Answer yes or no." --dangerously-skip-permissions`
+   must answer yes. `~/.agents/skills/` looks correct per Antigravity's own bundled docs but was
+   confirmed NOT to be scanned in live testing — only `~/.gemini/skills/` is confirmed working.
+4. **List**: run `agy` interactively, execute `/help`, and confirm all `vn-*` skills are present — no reload step is needed since Antigravity re-scans on session start.
 
 ---
 
@@ -89,5 +93,5 @@ Perform a controlled "mini-task" to verify the Tech Lead loop.
 Verify all components are correctly removed.
 
 1. **Uninstall**: `bash agy-vnsq/scripts/uninstall-agy-squad.sh`
-2. **Confirm**: `~/.agents/skills/` (or `<target>/.agents/skills/` for a workspace uninstall) no longer contains any `vn-*` directories.
-3. **Clean Scripts**: Verify `~/.agents/scripts/` does not contain `*-ask.js` files.
+2. **Confirm**: `~/.gemini/skills/` (or `<target>/.gemini/skills/` for a workspace uninstall) no longer contains any `vn-*` directories.
+3. **Clean Scripts**: Verify `~/.gemini/scripts/` does not contain `*-ask.js` files.

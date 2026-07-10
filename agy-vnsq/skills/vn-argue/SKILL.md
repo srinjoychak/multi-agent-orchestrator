@@ -46,7 +46,7 @@ git commit -m "argue: round $ROUND — $TOPIC"
 **Step 3 — Adversarial review**
 
 Find `codex-ask.js` the same way as `agy-ask.js` (see `/vn-agy`'s "Finding the adapter script"
-section: `agy-vnsq/scripts/`, `.agents/scripts/`, or `~/.agents/scripts/`, in that order).
+section: `agy-vnsq/scripts/`, `.gemini/scripts/`, or `~/.gemini/scripts/`, in that order).
 
 Run: `node <codex-ask.js path> "Perform an adversarial review of the current DESIGN.md. Look for security flaws, maintainability issues, or architectural weaknesses. Return a structured JSON finding." --model $CODEX_MODEL`
 

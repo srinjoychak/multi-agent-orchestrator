@@ -148,11 +148,18 @@ cd vn-squad
 bash agy-vnsq/scripts/deploy-agy-squad.sh
 ```
 
-This copies each `agy-vnsq/skills/<name>/` directory as-is into Antigravity's native
-customization root (`~/.agents/skills/` globally, or `<project>/.agents/skills/` for a workspace
-install) rather than zipping and installing packages — see `agy-vnsq/scripts/deploy-agy-squad.sh`
-for details. No `/skills reload` step is required; Antigravity re-scans customization roots
-automatically.
+This copies each `agy-vnsq/skills/<name>/` directory as-is into `~/.gemini/skills/` (global) or
+`<project>/.gemini/skills/` (workspace) rather than zipping and installing packages. No
+`/skills reload` step is required; Antigravity re-scans on session start.
+
+> **Note on the discovery location:** Antigravity's own bundled documentation describes
+> `~/.agents/skills/` as the customization root for skills. That was tested live with a real,
+> already-installed skill sitting in that exact location — `agy` reported it as unavailable.
+> The location confirmed working by live testing is `~/.gemini/skills/`, the legacy Gemini CLI
+> skill-install path that Antigravity still scans for backward compatibility. This deploy script
+> targets the confirmed-working location, not the documented one. Workspace-scoped installs
+> (`<project>/.gemini/skills/`) follow the same pattern by analogy but have not been separately
+> confirmed via live testing — if skills don't show up there, use a global install instead.
 
 ### Uninstallation
 

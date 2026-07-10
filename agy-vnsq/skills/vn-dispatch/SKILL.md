@@ -28,8 +28,8 @@ isolated context and git worktree.
 | `[claude]` | `claude-ask.js` | e.g. `--model sonnet` |
 
 **Finding these scripts:** check, in order, `agy-vnsq/scripts/` relative to the git repo root
-(working directly in this repo), `.agents/scripts/` relative to the git repo root (workspace
-deploy), or `~/.agents/scripts/` (global deploy). See `/vn-agy` for details.
+(working directly in this repo), `.gemini/scripts/` relative to the git repo root (workspace
+deploy), or `~/.gemini/scripts/` (global deploy). See `/vn-agy` for details.
 
 **Each annotated task should run in its own isolated git worktree** (use `/vn-worktrees` first).
 

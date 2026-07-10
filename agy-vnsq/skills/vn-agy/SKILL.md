@@ -14,8 +14,9 @@ Delegate a research, analysis, or planning prompt to Antigravity CLI via the lig
 
 The install layout varies by deployment scope — check in this order and use whichever exists:
 1. `agy-vnsq/scripts/agy-ask.js` relative to the git repo root (working directly in this repo)
-2. `.agents/scripts/agy-ask.js` relative to the git repo root (workspace-scoped deploy)
-3. `~/.agents/scripts/agy-ask.js` (global deploy)
+2. `.gemini/scripts/agy-ask.js` relative to the git repo root (workspace-scoped deploy)
+3. `~/.gemini/scripts/agy-ask.js` (global deploy — confirmed working; `~/.agents/scripts/` is NOT
+   discovered by Antigravity despite its own bundled docs describing that location)
 
 Use `git rev-parse --show-toplevel` to find the repo root for options 1 and 2.
 

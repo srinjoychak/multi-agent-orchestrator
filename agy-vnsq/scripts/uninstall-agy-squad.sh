@@ -9,7 +9,7 @@ set -e
 
 REPO="$(git rev-parse --show-toplevel)"
 SKILLS_DIR="$REPO/agy-vnsq/skills"
-GLOBAL_DIR="$HOME/.agents"
+GLOBAL_DIR="$HOME/.gemini"
 
 echo "Agy-VN-Squad — Uninstall"
 echo ""
@@ -24,7 +24,7 @@ if [ -n "$1" ]; then
         exit 1
     fi
     SCOPE="workspace"
-    DEST_DIR="$TARGET_DIR/.agents"
+    DEST_DIR="$TARGET_DIR/.gemini"
     echo "Uninstalling from workspace: $TARGET_DIR"
 else
     DEST_DIR="$GLOBAL_DIR"
