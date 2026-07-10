@@ -32,6 +32,12 @@ rm -rf "$INSTALL_DIR/skills/vn-finish"
 rm -rf "$INSTALL_DIR/skills/vn-verify"
 rm -rf "$INSTALL_DIR/skills/vn-review"
 
+# Legacy artifacts from installs predating the Gemini -> Antigravity port
+rm -rf "$INSTALL_DIR/skills/vn-gemini"
+rm -f "$INSTALL_DIR/scripts/gemini-ask.js"
+rm -f "$INSTALL_DIR/codex-vnsq/scripts/gemini-ask.js"
+rm -f "$INSTALL_DIR/config/gemini-settings.json"
+
 rm -f "$INSTALL_DIR/scripts/codex-ask.js"
 rm -f "$INSTALL_DIR/scripts/claude-ask.js"
 rm -f "$INSTALL_DIR/scripts/agy-ask.js"

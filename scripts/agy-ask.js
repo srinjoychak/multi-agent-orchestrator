@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { mkdtemp, mkdir, copyFile, rm, chmod } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 
 // --- Parse args ---
 const args = process.argv.slice(2);
@@ -39,7 +39,7 @@ async function isolatedAgyAuth() {
   const sourceDir = join(homedir(), '.gemini', 'antigravity-cli');
   const tokenFile = join(sourceDir, 'antigravity-oauth-token');
   if (!existsSync(tokenFile)) {
-    return { env: {}, cleanup: async () => {} };
+    return { env: {}, tempHome: null, cleanup: async () => {} };
   }
 
   const tempHome = await mkdtemp(join(tmpdir(), 'agy-auth-'));
@@ -62,6 +62,7 @@ async function isolatedAgyAuth() {
 
   return {
     env: { HOME: tempHome },
+    tempHome,
     cleanup: async () => rm(tempHome, { recursive: true, force: true }).catch(() => {})
   };
 }
@@ -80,7 +81,7 @@ function parseOutput(stdout) {
 }
 
 // --- Main ---
-const { env: authEnv, cleanup } = await isolatedAgyAuth();
+const { env: authEnv, tempHome, cleanup } = await isolatedAgyAuth();
 
 const doCleanup = async (code) => {
   await cleanup();
@@ -88,11 +89,20 @@ const doCleanup = async (code) => {
 };
 process.on('SIGINT', () => doCleanup(130));
 process.on('SIGTERM', () => doCleanup(143));
-process.on('exit', () => cleanup().catch(() => {}));
+// 'exit' only supports synchronous work — the async cleanup() above cannot
+// reliably finish here, so this is a last-resort sync fallback for crash paths.
+process.on('exit', () => {
+  if (tempHome) {
+    try { rmSync(tempHome, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+});
 
 const env = { ...process.env, ...authEnv };
 
-const cliArgs = ['-p', prompt, '--dangerously-skip-permissions'];
+// Without --add-dir, agy sandboxes all file writes into its own
+// $HOME/.gemini/antigravity-cli/scratch/ instead of workDir, even though
+// `cwd` is set correctly below — confirmed by hands-on testing.
+const cliArgs = ['-p', prompt, '--dangerously-skip-permissions', '--add-dir', workDir];
 if (model) cliArgs.push('--model', model);
 
 const MAX_BUFFER = 32 * 1024 * 1024;

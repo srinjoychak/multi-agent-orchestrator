@@ -8,7 +8,16 @@ description: Delegate a research, analysis, or large-context prompt to Antigravi
 *Sourced from VN-Squad v2 (Claude setup)*
 
 Delegate a research, analysis, or planning prompt to Antigravity CLI via the lightweight
-`agy-vnsq/scripts/agy-ask.js` adapter. No Docker required.
+`agy-ask.js` adapter. No Docker required.
+
+## Finding the adapter script
+
+The install layout varies by deployment scope — check in this order and use whichever exists:
+1. `agy-vnsq/scripts/agy-ask.js` relative to the git repo root (working directly in this repo)
+2. `.agents/scripts/agy-ask.js` relative to the git repo root (workspace-scoped deploy)
+3. `~/.agents/scripts/agy-ask.js` (global deploy)
+
+Use `git rev-parse --show-toplevel` to find the repo root for options 1 and 2.
 
 ## Invocation
 
@@ -27,9 +36,9 @@ Delegate a research, analysis, or planning prompt to Antigravity CLI via the lig
 
 **Announce:** "Delegating to Antigravity (`$MODEL`): $PROMPT"
 
-Run:
+Run (substituting whichever adapter path was found above):
 ```bash
-node agy-vnsq/scripts/agy-ask.js "$PROMPT" --model "$MODEL"
+node <agy-ask.js path> "$PROMPT" --model "$MODEL"
 ```
 
 Parse the JSON output and present `summary` to the user.

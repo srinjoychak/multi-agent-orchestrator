@@ -21,7 +21,7 @@ Verify each adapter script can invoke its target CLI and return structured JSON.
 Verify skills are correctly discovered by the Antigravity CLI.
 
 1. **Deploy**: `bash agy-vnsq/scripts/deploy-agy-squad.sh`
-2. **Confirm registration**: check `~/.agents/skills/` (global) or `.agents/skills.json` (workspace) references `agy-vnsq/skills`.
+2. **Confirm registration**: check `~/.agents/skills/` (global) or `<target>/.agents/skills/` (workspace) contains a `vn-*` directory per skill, each copied from `agy-vnsq/skills/`.
 3. **List**: run `agy` interactively, execute `/help`, and confirm all `vn-*` skills are present — no reload step is needed since Antigravity re-scans customization roots on session start.
 
 ---
@@ -77,5 +77,5 @@ Perform a controlled "mini-task" to verify the Tech Lead loop.
 Verify all components are correctly removed.
 
 1. **Uninstall**: `bash agy-vnsq/scripts/uninstall-agy-squad.sh`
-2. **Confirm**: `~/.agents/skills/` no longer contains `vn-*` entries sourced from this package (or the workspace `.agents/skills.json` entry is removed).
+2. **Confirm**: `~/.agents/skills/` (or `<target>/.agents/skills/` for a workspace uninstall) no longer contains any `vn-*` directories.
 3. **Clean Scripts**: Verify `~/.agents/scripts/` does not contain `*-ask.js` files.

@@ -98,10 +98,11 @@ cd vn-squad
 bash agy-vnsq/scripts/deploy-agy-squad.sh
 ```
 
-This registers `agy-vnsq/skills/` with Antigravity's native discovery (writing/merging a
-`skills.json` entry rather than zipping and installing packages — see
-`agy-vnsq/scripts/deploy-agy-squad.sh` for details). No `/skills reload` step is required;
-Antigravity re-scans customization roots automatically.
+This copies each `agy-vnsq/skills/<name>/` directory as-is into Antigravity's native
+customization root (`~/.agents/skills/` globally, or `<project>/.agents/skills/` for a workspace
+install) rather than zipping and installing packages — see `agy-vnsq/scripts/deploy-agy-squad.sh`
+for details. No `/skills reload` step is required; Antigravity re-scans customization roots
+automatically.
 
 ### Uninstallation
 

@@ -20,7 +20,7 @@ Subagents, skill routing, and iterative review don't need infrastructure — the
 |---|---|---|
 | Task execution | Docker containers | Claude Code subagents via Task tool |
 | Design review | ❌ | `/argue` — Claude↔Codex debate loop |
-| Gemini/Antigravity work | worker-gemini image | `scripts/agy-ask.js` (direct CLI) |
+| Gemini work | worker-gemini image | `scripts/agy-ask.js` (direct CLI) |
 | Codex work | worker-codex image | codex-plugin-cc (`/codex:rescue`) |
 | State tracking | SQLite task machine | Session + git log |
 | Infrastructure | Docker, Node.js server | Zero |

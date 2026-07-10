@@ -23,9 +23,13 @@ isolated context and git worktree.
 
 | Annotation | Routes to | Model flag |
 |---|---|---|
-| `[agy]` | `agy-vnsq/scripts/agy-ask.js` | `--model flash|pro` |
-| `[codex]` | `agy-vnsq/scripts/codex-ask.js` | e.g. `--model gpt-5.4-mini` |
-| `[claude]` | `agy-vnsq/scripts/claude-ask.js` | e.g. `--model sonnet` |
+| `[agy]` | `agy-ask.js` | `--model flash|pro` |
+| `[codex]` | `codex-ask.js` | e.g. `--model gpt-5.4-mini` |
+| `[claude]` | `claude-ask.js` | e.g. `--model sonnet` |
+
+**Finding these scripts:** check, in order, `agy-vnsq/scripts/` relative to the git repo root
+(working directly in this repo), `.agents/scripts/` relative to the git repo root (workspace
+deploy), or `~/.agents/scripts/` (global deploy). See `/vn-agy` for details.
 
 **Each annotated task should run in its own isolated git worktree** (use `/vn-worktrees` first).
 
@@ -38,7 +42,7 @@ isolated context and git worktree.
 3. **Task Execution Protocol**:
    Redirect outputs to `/tmp/vnsq-<task-id>.*` to track progress and results:
    ```bash
-   node agy-vnsq/scripts/[agent]-ask.js "<prompt>" \
+   node <scripts-dir>/[agent]-ask.js "<prompt>" \
      --work-dir <worktree> \
      > /tmp/vnsq-<id>.stdout.json \
      2> /tmp/vnsq-<id>.stderr.log; \
@@ -47,7 +51,7 @@ isolated context and git worktree.
 4. **Completion Monitoring**:
    Poll for the existence of the `.exit` file for each task.
 5. **Review and integrate**:
-   - Read `.stdout.json` for the agent's summary and token usage.
+   - Read `.stdout.json` for the agent's summary (token usage is only reported by `claude-ask.js`/`codex-ask.js`; `agy-ask.js` does not report it).
    - Read `.stderr.log` if the exit code in `.exit` is non-zero.
    - Verify no file conflicts before merging worktrees.
 

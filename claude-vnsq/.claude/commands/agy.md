@@ -59,7 +59,7 @@ If `exitCode != 0`:
 - **Large context**: Analyze many files at once
 - **Docs**: Write comprehensive documentation, READMEs, API docs
 - **Planning**: Explore design alternatives before `/argue`
-- **Free-tier tasks**: Tasks where Claude quota is scarce
+- **Quota conservation**: Tasks where Claude quota is scarce
 
 ## Prerequisites
 
