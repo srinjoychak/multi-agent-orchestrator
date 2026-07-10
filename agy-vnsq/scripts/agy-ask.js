@@ -168,5 +168,12 @@ const output = {
   exitCode: result.status,
 };
 
+// agy writes diagnostic info (timeouts, auth failures) to stderr on
+// failure — surface it so callers can diagnose a non-zero exit rather than
+// only seeing an empty/unhelpful summary. Confirmed via `--print-timeout 1s`.
+if (result.stderr && result.stderr.trim()) {
+  output.stderr = result.stderr.trim();
+}
+
 process.stdout.write(JSON.stringify(output, null, 2) + '\n');
 process.exit(result.status ?? 0);

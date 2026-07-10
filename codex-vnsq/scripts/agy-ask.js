@@ -123,15 +123,16 @@ const resolvedModel = resolveModel(model);
 const cliArgs = ['-p', prompt, '--dangerously-skip-permissions', '--add-dir', workDir, '--print-timeout', '15m'];
 if (resolvedModel) cliArgs.push('--model', resolvedModel);
 
+const MAX_BUFFER = 32 * 1024 * 1024;
 const result = spawnSync('agy', cliArgs, {
   cwd: workDir,
   env,
   encoding: 'utf8',
-  maxBuffer: 32 * 1024 * 1024,
+  maxBuffer: MAX_BUFFER,
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 
-if (result.stdout && result.stdout.length >= (32 * 1024 * 1024) * 0.9) {
+if (result.stdout && result.stdout.length >= MAX_BUFFER * 0.9) {
   console.error('WARNING: output near buffer limit (32MB), response may be truncated');
 }
 
@@ -150,6 +151,13 @@ const output = {
   model: resolvedModel ?? MODEL_ALIASES.flash,
   exitCode: result.status,
 };
+
+// agy writes diagnostic info (timeouts, auth failures) to stderr on
+// failure — surface it so callers can diagnose a non-zero exit rather than
+// only seeing an empty/unhelpful summary. Confirmed via `--print-timeout 1s`.
+if (result.stderr && result.stderr.trim()) {
+  output.stderr = result.stderr.trim();
+}
 
 process.stdout.write(JSON.stringify(output, null, 2) + '\n');
 process.exit(result.status ?? 0);
