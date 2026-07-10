@@ -32,7 +32,9 @@ node /path/to/scripts/agy-ask.js "<full self-contained prompt>" --model flash
 
 ## Prompt construction rules
 
-- Paste relevant file contents inline — Antigravity doesn't have access to your working tree
+- `agy-ask.js` grants Antigravity read/write access to `--work-dir` directly (via `--add-dir`),
+  so it can read existing project files and write output there itself — you don't need to paste
+  file contents in for it to see them, though doing so still helps for very targeted context.
 - Include exact file paths where output should land
 - End with: "After completing all files, output a JSON summary: { files_written: [...], summary: '...' }"
 - For code tasks: include the language, style conventions, any tests to run
@@ -40,7 +42,9 @@ node /path/to/scripts/agy-ask.js "<full self-contained prompt>" --model flash
 ## After Antigravity responds
 
 1. Parse the summary from Antigravity's output
-2. If Antigravity produced file content in its response but didn't write files (it can't directly write): extract the code and write the files yourself using Bash
+2. Verify the files it claims to have written actually exist at the expected paths and match
+   what was asked (`agy-ask.js`'s `summary` field is truncated to 4000 chars and is not a
+   substitute for checking the real files) — read them back with Bash/Read
 3. Run any verification commands specified in the task
 4. Commit: `git add -A && git commit -m "agy: <task summary>"`
 5. End your response with this block — **mandatory, no exceptions**:

@@ -18,7 +18,7 @@
  *     --approval-mode yolo.
  */
 
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { mkdtemp, mkdir, copyFile, rm, chmod } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
@@ -31,7 +31,9 @@ const prompt = promptIdx !== -1 ? args[promptIdx] : null;
 const modelFlag = args.indexOf('--model');
 const model = modelFlag !== -1 ? args[modelFlag + 1] : null;
 const workDirFlag = args.indexOf('--work-dir');
-const workDir = workDirFlag !== -1 ? args[workDirFlag + 1] : process.cwd();
+// Resolve to absolute: agy resolves --add-dir relative to its own cwd (already
+// workDir), so a relative value would double up into a wrong nested path.
+const workDir = resolve(workDirFlag !== -1 ? args[workDirFlag + 1] : process.cwd());
 
 if (!prompt) {
   console.error('Usage: node scripts/agy-ask.js "<prompt>" [--model flash|pro] [--work-dir <path>]');
@@ -75,6 +77,27 @@ async function isolatedAgyAuth() {
   };
 }
 
+// --- Model resolution ---
+// `agy models` only lists full display names (e.g. "Gemini 3.1 Pro (High)").
+// agy does NOT validate --model: passing a short alias like "pro", or any
+// unrecognized string, silently falls back to its own default with exit 0 —
+// confirmed by hands-on testing. Map our documented flash|pro aliases to the
+// exact strings agy actually accepts; anything else is passed through as-is
+// (in case the caller wants a specific model directly) but flagged.
+const MODEL_ALIASES = {
+  flash: 'Gemini 3.5 Flash (Medium)',
+  pro: 'Gemini 3.1 Pro (High)',
+};
+function resolveModel(rawModel) {
+  if (!rawModel) return null;
+  const resolved = MODEL_ALIASES[rawModel.toLowerCase()];
+  if (!resolved) {
+    console.error(`WARNING: --model "${rawModel}" is not a known alias (flash|pro). Passing it through as-is — if it isn't an exact match from \`agy models\`, agy will silently ignore it and use its own default.`);
+    return rawModel;
+  }
+  return resolved;
+}
+
 // --- Output parsing ---
 // agy has no JSON output mode. Strip the trailing "**Summary of work**:" block
 // agy sometimes appends and return the rest as plain text.
@@ -110,8 +133,11 @@ const env = { ...process.env, ...authEnv };
 // Without --add-dir, agy sandboxes all file writes into its own
 // $HOME/.gemini/antigravity-cli/scratch/ instead of workDir, even though
 // `cwd` is set correctly below — confirmed by hands-on testing.
-const cliArgs = ['-p', prompt, '--dangerously-skip-permissions', '--add-dir', workDir];
-if (model) cliArgs.push('--model', model);
+// agy's own --print-timeout defaults to 5m0s and silently returns whatever
+// output it has so far when it fires — too short for larger dispatch tasks.
+const resolvedModel = resolveModel(model);
+const cliArgs = ['-p', prompt, '--dangerously-skip-permissions', '--add-dir', workDir, '--print-timeout', '15m'];
+if (resolvedModel) cliArgs.push('--model', resolvedModel);
 
 const MAX_BUFFER = 32 * 1024 * 1024;
 const result = spawnSync('agy', cliArgs, {
@@ -138,7 +164,7 @@ if (result.error) {
 const { summary } = parseOutput(result.stdout ?? '');
 const output = {
   summary,
-  model: model ?? 'flash',
+  model: resolvedModel ?? MODEL_ALIASES.flash,
   exitCode: result.status,
 };
 
