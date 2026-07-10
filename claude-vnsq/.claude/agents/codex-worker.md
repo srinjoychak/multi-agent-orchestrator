@@ -1,6 +1,6 @@
 ---
 name: codex-worker
-description: Use when a task should be executed by Codex via codex-plugin-cc. Handles any task type — coding, debugging, testing, refactoring, adversarial review. Prefer this agent when the user requests Codex explicitly, for complex multi-file refactors, security-sensitive code, or when Claude+Gemini have already attempted and need a fresh perspective. One active Codex request at a time (broker queues).
+description: Use when a task should be executed by Codex via codex-plugin-cc. Handles any task type — coding, debugging, testing, refactoring, adversarial review. Prefer this agent when the user requests Codex explicitly, for complex multi-file refactors, security-sensitive code, or when Claude+Antigravity have already attempted and need a fresh perspective. One active Codex request at a time (broker queues).
 model: haiku
 tools: Bash, Read
 permissionMode: acceptEdits

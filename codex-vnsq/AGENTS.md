@@ -8,10 +8,10 @@ Use skills and collaborators instead of doing all work inline.
 | Skill | When to use |
 |---|---|
 | `vn-plan` | Decompose any non-trivial task into TDD steps before starting |
-| `vn-dispatch` | Run 3+ independent tasks in parallel via Codex, Claude, or Gemini workers |
+| `vn-dispatch` | Run 3+ independent tasks in parallel via Codex, Claude, or Antigravity workers |
 | `vn-scaffold` | Decompose a complex or repeatedly-failing task into tiered subtasks |
 | `vn-argue` | Debate a design with Claude before writing code |
-| `vn-gemini` | Research, analysis, or large-context tasks via `gemini-ask.js` |
+| `vn-agy` | Research, analysis, or large-context tasks via `agy-ask.js` |
 | `vn-claude` | Delegate a focused task to Claude CLI |
 | `vn-review` | Request a structured code review |
 | `vn-worktrees` | Create isolated git worktrees for parallel work |
@@ -37,7 +37,7 @@ Routing is done via `[agent]` annotations in `vn-dispatch`.
 
 - `[codex]` — Codex CLI via `codex-vnsq/scripts/codex-ask.js`
 - `[claude]` — Claude CLI via `codex-vnsq/scripts/claude-ask.js`
-- `[gemini]` — Gemini CLI via `codex-vnsq/scripts/gemini-ask.js`
+- `[agy]` — Antigravity CLI via `codex-vnsq/scripts/agy-ask.js`
 
 ## Constraints
 
@@ -50,4 +50,4 @@ Routing is done via `[agent]` annotations in `vn-dispatch`.
 
 `codex-vnsq/scripts/codex-ask.js`
 `codex-vnsq/scripts/claude-ask.js`
-`codex-vnsq/scripts/gemini-ask.js`
+`codex-vnsq/scripts/agy-ask.js`

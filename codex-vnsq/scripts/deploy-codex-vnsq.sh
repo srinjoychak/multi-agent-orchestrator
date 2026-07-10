@@ -39,16 +39,14 @@ fi
 
 mkdir -p "$INSTALL_DIR/scripts"
 mkdir -p "$INSTALL_DIR/skills"
-mkdir -p "$INSTALL_DIR/config"
 mkdir -p "$INSTALL_DIR/codex-vnsq/scripts"
 mkdir -p "$INSTALL_DIR/codex-vnsq/skills"
 
 cp "$SOURCE_DIR/AGENTS.md" "$INSTALL_DIR/AGENTS.md"
 cp "$SOURCE_DIR/README.md" "$INSTALL_DIR/README.md"
 cp "$SOURCE_DIR/TEST-PLAN.md" "$INSTALL_DIR/TEST-PLAN.md"
-cp "$REPO/config/gemini-settings.json" "$INSTALL_DIR/config/gemini-settings.json"
 
-for script_name in codex-ask claude-ask gemini-ask vn-dispatch; do
+for script_name in codex-ask claude-ask agy-ask vn-dispatch; do
   src="$SOURCE_DIR/scripts/$script_name.js"
   [ -f "$src" ] || continue
   cp "$src" "$INSTALL_DIR/scripts/$script_name.js"

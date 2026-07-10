@@ -4,7 +4,7 @@
   "description": "Skills-native multi-agent orchestration for Claude Code — no Docker required",
   "type": "module",
   "scripts": {
-    "gemini": "node scripts/gemini-ask.js",
+    "agy": "node scripts/agy-ask.js",
     "claude": "node scripts/claude-ask.js",
     "codex": "node scripts/codex-ask.js",
     "vn-dispatch": "node codex-vnsq/scripts/vn-dispatch.js",
@@ -15,7 +15,7 @@
     "ai-agents",
     "multi-agent",
     "claude-code",
-    "gemini-cli",
+    "antigravity-cli",
     "codex",
     "skills",
     "agent-collaboration"

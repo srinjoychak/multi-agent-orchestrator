@@ -84,7 +84,7 @@ Summarise:
 
 - **Dispatch**: Use Claude Code's Task tool with the above prompt template.
 - **Context**: Each subagent has a fresh context — do NOT reference "what we discussed earlier".
-- **Constraints**: Add `"Do NOT call any /argue, /gemini, or /codex:* skills"` to prevent recursion.
+- **Constraints**: Add `"Do NOT call any /argue, /agy, or /codex:* skills"` to prevent recursion.
 - **Output format**: Subagent returns a text summary. Verify with `git log` independently.
 
 ### Codex (via codex-plugin-cc)
@@ -94,12 +94,12 @@ Summarise:
 - **Review**: `/codex:adversarial-review` returns `{ verdict, findings[], confidence }`.
   Used by `/argue` skill automatically.
 
-### Gemini (via scripts/gemini-ask.js)
+### Antigravity (via scripts/agy-ask.js)
 
-- **Dispatch**: `/gemini <prompt>` skill or `node scripts/gemini-ask.js "<prompt>"` directly.
+- **Dispatch**: `/agy <prompt>` skill or `node scripts/agy-ask.js "<prompt>"` directly.
 - **Best for**: Large-context analysis, documentation, research, planning alternatives.
-- **Output**: JSON `{ summary, model, exitCode, tokenUsage }` — `/gemini` skill presents `summary`.
-- **Known**: `libsecret` and `projects.json` warnings on stderr are harmless.
+- **Output**: JSON `{ summary, model, exitCode }` — `/agy` skill presents `summary`.
+- **Known**: OAuth-only auth — no API-key env var. Run `agy` once interactively to log in.
 
 ---
 
@@ -107,8 +107,8 @@ Summarise:
 
 | Task type | Preferred agent | Reason |
 |---|---|---|
-| research / analysis | gemini | Large context window, free tier |
-| docs / planning | gemini | Strong writing, good at structure |
+| research / analysis | agy | Large context window |
+| docs / planning | agy | Strong writing, good at structure |
 | code / refactor | claude-subagent | Precision, reasoning, multi-file |
 | test | claude-subagent | Understands test patterns well |
 | debug | claude-subagent or codex | Step-by-step reasoning |

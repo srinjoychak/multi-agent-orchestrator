@@ -1,7 +1,7 @@
 # /scaffold — Curriculum Task Decomposition
 
 Generate a tiered difficulty ladder for a task that has failed or is too complex to
-dispatch directly. Uses Gemini to decompose into increasingly complex sub-tasks.
+dispatch directly. Uses Antigravity to decompose into increasingly complex sub-tasks.
 
 ## When to use
 - A task has returned EmptyDiff or CompileRed after 2+ retries
@@ -16,7 +16,7 @@ dispatch directly. Uses Gemini to decompose into increasingly complex sub-tasks.
 
 ## Workflow
 
-1. Send to Gemini: "Decompose this task into 3-4 tiers of increasing complexity.
+1. Send to Antigravity: "Decompose this task into 3-4 tiers of increasing complexity.
    Each tier must be independently testable and committable.
    Task: <description>"
 
@@ -36,4 +36,4 @@ dispatch directly. Uses Gemini to decompose into increasingly complex sub-tasks.
 ## Constraints
 - Each tier must produce independently committed, testable work
 - Tier N must not depend on tier N+1 being complete
-- Do NOT call /argue, /gemini, or /codex:* skills inside scaffold
+- Do NOT call /argue, /agy, or /codex:* skills inside scaffold
