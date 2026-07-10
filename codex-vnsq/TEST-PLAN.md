@@ -14,6 +14,13 @@ Verify each adapter script can invoke its target CLI and return structured JSON.
 | `node codex-vnsq/scripts/claude-ask.js "what is 2+2"` | JSON output with `summary: "4"` or equivalent, `exitCode: 0`. |
 | `node codex-vnsq/scripts/agy-ask.js "what is 2+2"` | JSON output with `summary: "4"` or equivalent, `exitCode: 0`. |
 
+### 1a. Regression checks: agy silent-failure modes
+
+`agy` returns `exitCode: 0` even when `--model` is silently ignored or file writes land in the
+wrong place — see `agy-vnsq/TEST-PLAN.md` section 1a for the exact commands to verify `--model
+pro` actually switches models and files land in the real `--work-dir`, not agy's internal scratch
+directory.
+
 ---
 
 ## 2. Integration: Skill Deployment

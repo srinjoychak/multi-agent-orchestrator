@@ -59,6 +59,30 @@ Three specialized worker scripts handle delegation:
 
 ---
 
+## Model Selection
+
+`agy models` only lists full display names (e.g. `Gemini 3.1 Pro (High)`) — there is no model
+literally named `flash` or `pro`. **`agy` does not validate `--model`**: passing a short alias or
+any unrecognized string silently falls back to its own default with `exitCode: 0`, no error —
+confirmed by hands-on testing (`--model pro` was silently running on Flash the whole time before
+this was caught and fixed).
+
+`agy-ask.js` maps the documented `flash`/`pro` aliases to the exact strings `agy` accepts:
+
+| Alias | Resolves to |
+|---|---|
+| `flash` (default) | `Gemini 3.5 Flash (Medium)` |
+| `pro` | `Gemini 3.1 Pro (High)` |
+
+Anything else is passed through as-is (for callers who want a specific model directly, e.g.
+`Claude Opus 4.6 (Thinking)` — `agy` also serves non-Gemini models) but `agy-ask.js` prints a
+warning to stderr, since an unrecognized value will silently no-op exactly like the `flash`/`pro`
+bug did. Run `agy models` to see the full current list before using a raw name.
+
+`agy` reports no token-usage figures at all (unlike the old `gemini` CLI) — nothing to surface.
+
+---
+
 ## Security & Isolation
 
 Agy-VN-Squad implements a defense-in-depth model for subprocess workers:
@@ -66,7 +90,16 @@ Agy-VN-Squad implements a defense-in-depth model for subprocess workers:
 - **Auth Isolation**: `agy-ask.js` copies only the OAuth token (`~/.gemini/antigravity-cli/antigravity-oauth-token`)
   into a `chmod 700` scratch directory and points the subprocess's `$HOME` at it. Unlike the old
   `gemini` CLI, `agy` has no API-key auth and no dedicated config-dir override env var, so `$HOME`
-  redirection is the isolation boundary. Cleanup runs via SIGTERM/SIGINT handlers.
+  redirection is the isolation boundary. Cleanup runs via SIGTERM/SIGINT handlers, plus a
+  synchronous `fs.rmSync` fallback in Node's `'exit'` handler for crash paths (the `'exit'` event
+  only supports synchronous work, so an async cleanup call there would silently never finish).
+- **Explicit workspace grant via `--add-dir`**: without `--add-dir <workDir>`, `agy` sandboxes
+  *all* file writes into its own `$HOME/.gemini/antigravity-cli/scratch/` instead of the actual
+  project directory — even though `cwd` is set correctly — because the isolated `$HOME` has no
+  `trustedWorkspaces` entry for it. `agy-ask.js` passes `--add-dir <workDir>` explicitly (resolved
+  to an absolute path) to grant real read/write access to the target directory. This was found via
+  hands-on testing, not documentation — without it, every `[agy]` dispatch task would silently
+  write its output into a scratch dir that then gets deleted by the adapter's own cleanup.
 - **No MCP leakage by construction**: because the scratch `$HOME` never receives `settings.json`,
   `config/mcp_config.json`, or `plugins/`, the subprocess loads zero host MCP servers or plugins —
   no explicit "worker-safe settings" override file is needed (Gemini CLI required one; Antigravity
@@ -77,8 +110,25 @@ Agy-VN-Squad implements a defense-in-depth model for subprocess workers:
 ## Performance & Reliability
 
 - **Buffer Safety**: All adapters (`agy`, `claude`, `codex`) implement a 32MB buffer guard with truncation warnings to prevent silent data loss on large responses.
+- **Print Timeout**: `agy-ask.js` passes `--print-timeout 15m` — `agy`'s own default is `5m0s`,
+  after which it silently returns whatever output it has so far rather than erroring, which can
+  truncate larger code-generation tasks.
 - **Result Tracking**: `/vn-dispatch` follows a 3-file protocol (`.stdout.json`, `.stderr.log`, `.exit`) for reliable task monitoring and failure diagnosis.
 - **Codex Guard**: `/vn-argue` includes a hard-stop on Codex unavailability to prevent debate loop failures.
+
+---
+
+## Known Limitations
+
+- No `pro-exp` tier (the old `gemini` CLI had `flash`/`pro`/`pro-exp`; `agy` collapses this to
+  just `flash`/`pro`).
+- No token-usage reporting in `agy-ask.js`'s JSON output — `agy` doesn't provide it.
+- `agy`'s lack of `--model` validation (see "Model Selection" above) means a typo'd model name
+  will silently run on `agy`'s default rather than failing loudly. `agy-ask.js` warns on stderr
+  for unrecognized values, but a caller not watching stderr won't notice.
+- Live interactive-session skill discovery (`agy` → `/help` showing `/vn-agy` etc.) has not been
+  verified end-to-end — only the file layout was confirmed to match Antigravity's documented
+  discovery spec, and deploy/uninstall were tested against a scratch directory.
 
 ---
 

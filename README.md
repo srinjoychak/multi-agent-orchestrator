@@ -236,6 +236,11 @@ Change the Claude Code session model before dispatching:
 | Codex | `--model` | `gpt-5.4-mini`, `gpt-5.3-codex-spark`, others | provider default |
 | Claude subagents | `/model` (CC command) | `opus`, `sonnet`, `haiku` | session model |
 
+> `agy` itself doesn't validate `--model` — an unrecognized value silently falls back to its
+> default with no error. `agy-ask.js` maps `flash`/`pro` to `agy`'s exact accepted model names
+> internally, so use those two aliases as documented; see `agy-vnsq/README.md` for details if you
+> need to pass a raw model name directly.
+
 ---
 
 ## Recommended Workflow

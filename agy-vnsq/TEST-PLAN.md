@@ -14,6 +14,18 @@ Verify each adapter script can invoke its target CLI and return structured JSON.
 | `node agy-vnsq/scripts/claude-ask.js "what is 2+2"` | JSON output with `summary: "4"`, `exitCode: 0`. |
 | `node agy-vnsq/scripts/codex-ask.js "what is 2+2"` | JSON output with `summary: "4"`, `exitCode: 0`. |
 
+### 1a. Regression checks: agy silent-failure modes
+
+`agy` reports `exitCode: 0` and plausible-looking output even when these fail — a passing exit
+code alone does NOT confirm correctness. Verify explicitly:
+
+| Check | Command | Expected |
+|---|---|---|
+| Model actually switches | `node agy-vnsq/scripts/agy-ask.js "What model are you? Reply with just the model name." --model pro` vs `--model flash` | The two `summary` values differ (`Gemini 3.1 Pro` vs `Gemini 3.5 Flash`) — if identical, `--model` is silently no-op-ing again. |
+| File lands in the real project dir | `node agy-vnsq/scripts/agy-ask.js "Create hello.js with console.log('hi')" --work-dir <scratch-dir>` then `ls <scratch-dir>/hello.js` | File exists at `<scratch-dir>/hello.js` — if missing, `agy` fell back to sandboxing writes into its own scratch dir again. |
+| Pre-existing file can be read and modified, not just created | Write a small file, ask agy to edit one value in it via `--work-dir`, then `cat` it back | Change applied correctly in place. |
+| Cleanup on interrupt | Start a long-running prompt in the background, `kill -TERM` it mid-run, then check `find /tmp -maxdepth 1 -iname "agy-auth-*"` | No leftover `agy-auth-*` directories (which would contain the OAuth token). |
+
 ---
 
 ## 2. Integration: Skill Deployment
