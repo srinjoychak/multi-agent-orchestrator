@@ -3,8 +3,8 @@ node_modules/
 *.lock
 .claude/settings.local.json
 
-# Ephemeral Gemini auth dirs created by gemini-ask.js
-/tmp/gemini-auth-*
+# Ephemeral Antigravity auth dirs created by agy-ask.js
+/tmp/agy-auth-*
 
 # Uninstall docs (local reference only)
 uninstall-v3.md

@@ -3,7 +3,7 @@
  * vn-dispatch.js — Parallel agent dispatcher for Codex-VN-Squad
  *
  * Parses annotated task lines, creates isolated git worktrees, and runs the
- * Codex / Claude / Gemini adapters in parallel.
+ * Codex / Claude / Antigravity adapters in parallel.
  *
  * Usage:
  *   node codex-vnsq/scripts/vn-dispatch.js [--worktree-root <path>] [--base <ref>] [--cleanup] [--input-file <path>]
@@ -11,7 +11,7 @@
  * Input format:
  *   [codex] do a thing
  *   [claude --model sonnet] do another thing
- *   [gemini --model pro] research this topic
+ *   [agy --model pro] research this topic
  */
 
 import { spawn, spawnSync } from 'node:child_process';
@@ -49,7 +49,7 @@ function parseTasks(text) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
 
-    const match = trimmed.match(/^\[(codex|claude|gemini)(?:\s+--model\s+([^\]]+))?\]\s*(.+)$/i);
+    const match = trimmed.match(/^\[(codex|claude|agy)(?:\s+--model\s+([^\]]+))?\]\s*(.+)$/i);
     if (!match) continue;
 
     tasks.push({

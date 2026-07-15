@@ -4,7 +4,7 @@ Dispatch independent tasks to specialized agents working in parallel, each in th
 isolated context and git worktree.
 
 **Any agent can handle any task type.** Routing is by your explicit annotation — not by
-assumed capability. Gemini can write code. Codex can write tests. Claude can do research.
+assumed capability. Antigravity can write code. Codex can write tests. Claude can do research.
 Choose based on what you want, not what's "typically" done.
 
 ---
@@ -18,13 +18,13 @@ Choose based on what you want, not what's "typically" done.
 
 | Annotation | Routes to | Model flag |
 |---|---|---|
-| `[gemini]` | `gemini-worker` subagent → Gemini CLI | `--model flash\|pro\|pro-exp` |
+| `[agy]` | `agy-worker` subagent → Antigravity CLI | `--model flash\|pro` |
 | `[codex]` | `codex-worker` subagent → codex-plugin-cc | `--model gpt-5.4-mini\|gpt-5.3-codex-spark` |
 | `[claude]` | Native Claude Code subagent (Task tool) | Inherits session model — change with `/model opus\|sonnet\|haiku` first |
 | *(no annotation)* | Native Claude Code subagent | Same as above |
 
 **Each annotated task gets its own isolated git worktree** (via `isolation: worktree` on the
-`gemini-worker` and `codex-worker` sub-agents). Claude tasks run in the main worktree unless
+`agy-worker` and `codex-worker` sub-agents). Claude tasks run in the main worktree unless
 you explicitly set isolation.
 
 ---
@@ -33,29 +33,28 @@ you explicitly set isolation.
 
 ### Same task type, different agents
 ```
-[gemini --model pro]   write the authentication module (src/auth/index.js)
+[agy --model pro]      write the authentication module (src/auth/index.js)
 [claude]               write unit tests for src/auth/index.js
 [codex]                review src/auth/index.js for security vulnerabilities
 ```
 
-### All Gemini, different models
+### All Antigravity, different models
 ```
-[gemini --model flash]   write JSDoc for all functions in src/utils/
-[gemini --model pro]     analyze the architecture of src/ and suggest improvements
-[gemini --model pro-exp] refactor src/db/ to use the repository pattern
+[agy --model flash]   write JSDoc for all functions in src/utils/
+[agy --model pro]     analyze the architecture of src/ and suggest improvements
 ```
 
 ### All agents on parallel features
 ```
-[gemini]   implement the rate limiter middleware (src/middleware/rate-limit.js)
+[agy]      implement the rate limiter middleware (src/middleware/rate-limit.js)
 [claude]   implement the caching layer (src/middleware/cache.js)
 [codex]    implement the auth middleware (src/middleware/auth.js)
 ```
 
 ### Mixed models, mixed agents
 ```
-[gemini --model pro]       write a comprehensive test suite for src/api/
-[claude]                   fix the type error in src/router/index.js line 42
+[agy --model pro]           write a comprehensive test suite for src/api/
+[claude]                    fix the type error in src/router/index.js line 42
 [codex --model gpt-5.4-mini]  review src/api/ for missing error handling
 ```
 
@@ -65,7 +64,7 @@ you explicitly set isolation.
 
 1. **List all tasks** with annotations
 2. **Spawn all annotated tasks in parallel** using the Agent tool — one Agent call per task
-3. **For `[gemini]` tasks**: delegate to `gemini-worker` subagent
+3. **For `[agy]` tasks**: delegate to `agy-worker` subagent
 4. **For `[codex]` tasks**: delegate to `codex-worker` subagent  
 5. **For `[claude]` or unannotated tasks**: spawn as a standard Task/Agent call
 6. **Wait for all to complete**, then **review and integrate**:

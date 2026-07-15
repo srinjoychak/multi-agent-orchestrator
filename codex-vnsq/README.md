@@ -2,7 +2,7 @@
 
 **Skills-native multi-agent orchestration for Codex CLI. No Docker. No servers. Just skills.**
 
-Codex, Claude Code, and Gemini CLI collaborate within your session through a curated set of
+Codex, Claude Code, and Antigravity CLI collaborate within your session through a curated set of
 skills — debating designs, dispatching parallel work, and reviewing each other's output.
 
 ---
@@ -18,7 +18,7 @@ native skills and lightweight worker adapters.
 | Task execution | Codex skills plus `vn-dispatch` subprocess workers |
 | Design review | `vn-argue` — Codex<->Claude debate loop |
 | Claude work | `scripts/claude-ask.js` (direct CLI) |
-| Gemini work | `scripts/gemini-ask.js` (direct CLI) |
+| Antigravity work | `scripts/agy-ask.js` (direct CLI) |
 | Isolation | Git worktrees via `vn-worktrees` |
 
 ---
@@ -31,10 +31,10 @@ skills catalog.
 | Skill | What it does |
 |---|---|
 | `vn-plan <task>` | Decompose into TDD bite-sized steps with exact file paths and code samples |
-| `vn-dispatch <tasks>` | Dispatch independent tasks to parallel agents (Codex, Claude, Gemini) |
+| `vn-dispatch <tasks>` | Dispatch independent tasks to parallel agents (Codex, Claude, Antigravity) |
 | `vn-scaffold <task>` | Decompose a complex task into tiered subtasks |
 | `vn-argue <topic>` | Codex proposes design -> Claude challenges -> consensus loop |
-| `vn-gemini <prompt>` | Direct Gemini CLI call for research or large-context work |
+| `vn-agy <prompt>` | Direct Antigravity CLI call for research or large-context work |
 | `vn-claude <prompt>` | Direct Claude CLI call for second-opinion implementation or review |
 | `vn-worktrees` | Create isolated git worktrees for parallel work |
 | `vn-finish` | Test-verified branch completion (merge or PR) |
@@ -51,16 +51,32 @@ Three specialized worker scripts handle delegation:
 |---|---|---|
 | `[codex]` | `scripts/codex-ask.js` | `codex` |
 | `[claude]` | `scripts/claude-ask.js` | `claude` |
-| `[gemini]` | `scripts/gemini-ask.js` | `gemini` |
+| `[agy]` | `scripts/agy-ask.js` | `agy` |
 
 ---
+
+## Model Selection
+
+`agy` does not validate `--model`: an unrecognized value (including a mistyped alias) silently
+falls back to its own default with `exitCode: 0` — confirmed by hands-on testing. `agy-ask.js`
+maps the documented `flash`/`pro` aliases to the exact strings `agy models` lists (`flash` →
+`Gemini 3.5 Flash (Medium)`, `pro` → `Gemini 3.1 Pro (High)`); anything else is passed through
+with a stderr warning. See `agy-vnsq/README.md` for the full write-up.
 
 ## Security & Isolation
 
 Codex-VN-Squad uses the same defense-in-depth model as the other vendor packages:
 
-- **Auth Isolation**: `gemini-ask.js` prefers `GEMINI_API_KEY`. If OAuth is used, it creates a
-  `chmod 700` temp directory and cleans it up on exit and signal handling.
+- **Auth Isolation**: `agy-ask.js` copies only its OAuth token
+  (`~/.gemini/antigravity-cli/antigravity-oauth-token`) into a `chmod 700` scratch directory and
+  points the subprocess's `$HOME` at it — `agy` has no API-key auth and no config-dir override
+  env var, so `$HOME` redirection is the isolation boundary. Cleaned up on exit and signal
+  handling (plus a synchronous `fs.rmSync` fallback in the `'exit'` handler, since that event only
+  supports synchronous work).
+- **Explicit workspace grant via `--add-dir`**: without it, `agy` sandboxes all file writes into
+  its own scratch directory instead of the real project directory, even with `cwd` set correctly —
+  confirmed by hands-on testing. `agy-ask.js` passes `--add-dir <workDir>` (absolute path) to grant
+  real access.
 - **Permission Scoping**: `claude-ask.js` defaults to a narrow allowlist
   (`Edit,Write,Glob,Grep,Read`). Use `--unsafe` only when the delegated task genuinely needs
   unrestricted tools.
@@ -69,8 +85,10 @@ Codex-VN-Squad uses the same defense-in-depth model as the other vendor packages
 
 ## Performance & Reliability
 
-- **Buffer Safety**: All adapters (`codex`, `claude`, `gemini`) implement a 32MB buffer guard
+- **Buffer Safety**: All adapters (`codex`, `claude`, `agy`) implement a 32MB buffer guard
   with truncation warnings.
+- **Print Timeout**: `agy-ask.js` passes `--print-timeout 15m` since `agy`'s own default (`5m0s`)
+  silently truncates output on larger tasks rather than erroring.
 - **Result Tracking**: `vn-dispatch` follows a 3-file protocol
   (`.stdout.json`, `.stderr.log`, `.exit`) for reliable task monitoring and failure diagnosis.
 - **Debate Guard**: `vn-argue` hard-stops if Claude is unavailable so Codex does not pretend a
@@ -84,13 +102,13 @@ Codex-VN-Squad uses the same defense-in-depth model as the other vendor packages
 
 - **Codex CLI** — installed and authenticated
 - **Claude CLI** (optional) — `npm install -g @anthropic-ai/claude-code`
-- **Gemini CLI** (optional) — `npm install -g @google/gemini-cli`
+- **Antigravity CLI** (optional) — see [antigravity.google/docs/cli-overview](https://antigravity.google/docs/cli-overview), then run `agy` once to complete OAuth login
 
 ### Installation
 
 ```bash
 git clone <this-repo>
-cd copilot_adapter
+cd vn-squad
 bash codex-vnsq/scripts/deploy-codex-vnsq.sh
 ```
 
@@ -99,7 +117,6 @@ The installer copies:
 - `codex-vnsq/AGENTS.md` -> `$CODEX_HOME/AGENTS.md`
 - `codex-vnsq/skills/*` -> `$CODEX_HOME/skills/*`
 - `codex-vnsq/scripts/*` -> `$CODEX_HOME/scripts/*`
-- `config/gemini-settings.json` -> `$CODEX_HOME/config/gemini-settings.json`
 
 If you pass a target path, the same layout is installed into that workspace instead of
 `$CODEX_HOME`.
@@ -130,7 +147,7 @@ Use this to verify the dispatcher and all three worker adapters from a Codex-led
 node codex-vnsq/scripts/vn-dispatch.js --worktree-root /tmp/codex-vnsq-dispatch-test <<'EOF'
 [codex] what is 1+1?
 [claude] what is 2+2?
-[gemini --model flash] what is 3+3?
+[agy --model flash] what is 3+3?
 EOF
 ```
 

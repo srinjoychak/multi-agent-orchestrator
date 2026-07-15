@@ -2,7 +2,7 @@
 
 **Skills-native multi-agent orchestration for Claude Code. No Docker. No servers. Just skills.**
 
-Claude Code, Gemini CLI, and Codex collaborate within your session through a curated set of
+Claude Code, Antigravity CLI, and Codex collaborate within your session through a curated set of
 slash command skills — debating designs, dispatching parallel work, and reviewing each other's
 output.
 
@@ -20,12 +20,16 @@ Subagents, skill routing, and iterative review don't need infrastructure — the
 |---|---|---|
 | Task execution | Docker containers | Claude Code subagents via Task tool |
 | Design review | ❌ | `/argue` — Claude↔Codex debate loop |
-| Gemini work | worker-gemini image | `scripts/gemini-ask.js` (direct CLI) |
+| Gemini work | worker-gemini image | `scripts/agy-ask.js` (direct CLI) |
 | Codex work | worker-codex image | codex-plugin-cc (`/codex:rescue`) |
 | State tracking | SQLite task machine | Session + git log |
 | Infrastructure | Docker, Node.js server | Zero |
 
 v1 is preserved on the `archive/vn-squad-v1` branch if you need it.
+
+> **Note:** Google decommissioned Gemini CLI in favor of [Antigravity CLI](https://antigravity.google)
+> (`agy`) in June 2026. VN-Squad's Gemini integration was ported to Antigravity — see
+> `agy-vnsq/README.md` for the standalone Antigravity-native package.
 
 ---
 
@@ -39,7 +43,7 @@ All skills live in `.claude/commands/` and are invoked as slash commands in Clau
 |---|---|
 | `/argue <topic>` | Claude proposes a design in `DESIGN.md` → Codex challenges it → Claude refines → repeat until consensus (max 4 rounds) |
 | `/scaffold <task>` | Decompose a complex or repeatedly-failing task into tiered subtasks; gates each tier on success before the next dispatch |
-| `/gemini <prompt> [--model flash\|pro\|pro-exp]` | Research, analysis, or large-context tasks via Gemini CLI |
+| `/agy <prompt> [--model flash\|pro]` | Research, analysis, or large-context tasks via Antigravity CLI |
 
 ### From [skills.sh](https://skills.sh) — obra/superpowers
 
@@ -69,11 +73,11 @@ Four collaborators, implemented as native Claude Code sub-agents:
 | Sub-agent | Definition | Any task? | Model flag | Isolation |
 |---|---|---|---|---|
 | **claude-subagent** | built-in | ✅ | `/model opus\|sonnet\|haiku` in CC session | main worktree |
-| **gemini-worker** | `.claude/agents/gemini-worker.md` | ✅ | `[gemini --model flash\|pro\|pro-exp]` | per-task worktree |
+| **agy-worker** | `.claude/agents/agy-worker.md` | ✅ | `[agy --model flash\|pro]` | per-task worktree |
 | **codex-worker** | `.claude/agents/codex-worker.md` | ✅ | `[codex --model gpt-5.4-mini\|gpt-5.3-codex-spark]` | per-task worktree |
 | **vn-reviewer** | `.claude/agents/vn-reviewer.md` | read-only | inherits session | main worktree |
 
-**Any agent can do any task.** Gemini writes code. Codex writes tests. Claude does research.
+**Any agent can do any task.** Antigravity writes code. Codex writes tests. Claude does research.
 Route by what you want — not by assumed capability.
 
 ### Agent Routing
@@ -81,13 +85,13 @@ Route by what you want — not by assumed capability.
 No percentage quotas. No hardcoded task-type defaults. Routing is entirely by **your explicit annotation** in `/dispatch`.
 
 ```
-[gemini --model pro]   write the authentication module      ← coding task → Gemini
+[agy --model pro]      write the authentication module      ← coding task → Antigravity
 [claude]               write tests for the auth module      ← testing task → Claude  
 [codex]                implement the rate limiter           ← coding task → Codex
-[gemini --model flash] write the API documentation         ← docs task → Gemini
+[agy --model flash]    write the API documentation           ← docs task → Antigravity
 ```
 
-All four tasks run in parallel. `gemini-worker` and `codex-worker` each get their own
+All four tasks run in parallel. `agy-worker` and `codex-worker` each get their own
 isolated git worktree (via `isolation: worktree` in their sub-agent definition).
 
 No annotation = Claude (the session default).
@@ -120,13 +124,13 @@ You: /codex:rescue implement the module system per DESIGN.md
 ### Example 2 — Research then build
 
 ```
-You: /gemini --model pro what are the tradeoffs of Drizzle ORM vs Prisma for a SQLite project?
+You: /agy --model pro what are the tradeoffs of Drizzle ORM vs Prisma for a SQLite project?
 ```
 
-Gemini returns a structured comparison (large context, free tier).
+Antigravity returns a structured comparison (large context).
 
 ```
-You: /argue based on the Gemini research, should we use Drizzle or Prisma?
+You: /argue based on the Antigravity research, should we use Drizzle or Prisma?
 ```
 
 Claude takes a position. Codex stress-tests it. Consensus in 2 rounds.
@@ -153,20 +157,20 @@ Two Claude subagents work in parallel.
 You: /dispatch
   [claude] fix the type error in src/auth/token.js line 42
   [claude] add missing error handling in src/api/users.js
-  [gemini] write JSDoc for all exported functions in src/utils/
+  [agy] write JSDoc for all exported functions in src/utils/
 ```
 
 Three agents work simultaneously. Each commits its own changes independently.
 
 ---
 
-### Example 4 — Gemini with model selection
+### Example 4 — Antigravity with model selection
 
 ```
-You: /gemini --model flash "summarize the last 50 git commits"
+You: /agy --model flash "summarize the last 50 git commits"
 # fast + cheap for simple summarization
 
-You: /gemini --model pro "analyze the security implications of the auth middleware"
+You: /agy --model pro "analyze the security implications of the auth middleware"
 # more capable model for security analysis
 ```
 
@@ -215,7 +219,7 @@ Change the Claude Code session model before dispatching:
 → /dispatch
     [claude] implement the rate limiter middleware per DESIGN.md
     [claude] write integration tests for the rate limiter
-    [gemini] update the API documentation with rate limit headers
+    [agy] update the API documentation with rate limit headers
 
 → /verify
 → /review
@@ -228,9 +232,14 @@ Change the Claude Code session model before dispatching:
 
 | Agent | Flag | Options | Default |
 |---|---|---|---|
-| Gemini | `--model` | `flash`, `pro`, `pro-exp` | `flash` |
+| Antigravity | `--model` | `flash`, `pro` | `flash` |
 | Codex | `--model` | `gpt-5.4-mini`, `gpt-5.3-codex-spark`, others | provider default |
 | Claude subagents | `/model` (CC command) | `opus`, `sonnet`, `haiku` | session model |
+
+> `agy` itself doesn't validate `--model` — an unrecognized value silently falls back to its
+> default with no error. `agy-ask.js` maps `flash`/`pro` to `agy`'s exact accepted model names
+> internally, so use those two aliases as documented; see `agy-vnsq/README.md` for details if you
+> need to pass a raw model name directly.
 
 ---
 
@@ -241,7 +250,7 @@ Change the Claude Code session model before dispatching:
 2. /argue <design question>   → agree on design before writing code
 3. /dispatch [agent] tasks    → parallel agents, routed by capability
    ↳ if task fails 2+ times: /scaffold → tier it, then re-dispatch
-4. /codex:rescue or /gemini   → targeted Codex/Gemini work
+4. /codex:rescue or /agy      → targeted Codex/Antigravity work
 5. /verify                    → evidence gate before claiming done
 6. /review                    → reviewer subagent
 7. /finish                    → merge or PR
@@ -255,7 +264,7 @@ Change the Claude Code session model before dispatching:
 
 - **Claude Code** — installed and authenticated (the Tech Lead)
 - **codex-plugin-cc** — for `/codex:*` commands ([openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc))
-- **Gemini CLI** (optional) — `npm install -g @google/gemini-cli` then `gemini auth`
+- **Antigravity CLI** (optional) — see [antigravity.google/docs/cli-overview](https://antigravity.google/docs/cli-overview), then run `agy` once to complete OAuth login
 
 ---
 
@@ -280,12 +289,12 @@ cd vn-squad
 bash scripts/deploy-vn-squad.sh
 ```
 
-This copies all skills to `~/.claude/commands/`, agents to `~/.claude/agents/`, the Gemini adapter to `~/.claude/scripts/`, and writes `~/.claude/CLAUDE.md` with Tech Lead instructions.
+This copies all skills to `~/.claude/commands/`, agents to `~/.claude/agents/`, the Antigravity adapter to `~/.claude/scripts/`, and writes `~/.claude/CLAUDE.md` with Tech Lead instructions.
 
 **Verify:**
 
 ```bash
-node ~/.claude/scripts/gemini-ask.js "what is 2+2"
+node ~/.claude/scripts/agy-ask.js "what is 2+2"
 ls ~/.claude/commands/   # all 9 skills present
 ls ~/.claude/agents/     # 3 agents present
 ```
@@ -320,18 +329,18 @@ Deploy skills directly into a specific project without touching `~/.claude/`:
 bash scripts/deploy-vn-squad.sh /path/to/your/project
 ```
 
-This copies `.claude/commands/`, `.claude/agents/`, `scripts/gemini-ask.js`, and `config/gemini-settings.json` into the target project. Skills are then available only when Claude Code is opened in that directory.
+This copies `.claude/commands/`, `.claude/agents/`, and `scripts/agy-ask.js` into the target project. Skills are then available only when Claude Code is opened in that directory.
 
 ---
 
 ### Verify setup
 
 ```bash
-# Test Gemini adapter (global)
-node ~/.claude/scripts/gemini-ask.js "what is 2+2"
+# Test Antigravity adapter (global)
+node ~/.claude/scripts/agy-ask.js "what is 2+2"
 
 # Test model flag
-node ~/.claude/scripts/gemini-ask.js "what is 2+2" --model pro
+node ~/.claude/scripts/agy-ask.js "what is 2+2" --model pro
 
 # Verify Codex plugin
 /codex:setup
@@ -345,13 +354,13 @@ node ~/.claude/scripts/gemini-ask.js "what is 2+2" --model pro
 vn-squad/
 ├── .claude/
 │   ├── agents/                 ← Native Claude Code sub-agent definitions
-│   │   ├── gemini-worker.md    ← Gemini CLI wrapper (isolation: worktree, model: haiku)
+│   │   ├── agy-worker.md       ← Antigravity CLI wrapper (isolation: worktree, model: haiku)
 │   │   ├── codex-worker.md     ← Codex wrapper (isolation: worktree, model: haiku)
 │   │   └── vn-reviewer.md      ← Read-only code reviewer (model: sonnet, memory: project)
 │   └── commands/               ← Slash command skills
 │       ├── argue.md            ← /argue    (Claude↔Codex design debate)
 │       ├── scaffold.md         ← /scaffold (curriculum task decomposition)
-│       ├── gemini.md           ← /gemini   (direct Gemini CLI call)
+│       ├── agy.md              ← /agy      (direct Antigravity CLI call)
 │       ├── dispatch.md         ← /dispatch (agent routing with annotations)
 │       ├── plan.md             ← /plan    (skills.sh)
 │       ├── worktrees.md        ← /worktrees (skills.sh)
@@ -359,10 +368,8 @@ vn-squad/
 │       ├── verify.md           ← /verify  (skills.sh)
 │       └── review.md           ← /review  (skills.sh)
 ├── scripts/
-│   ├── gemini-ask.js           ← Gemini CLI adapter (used by gemini-worker)
+│   ├── agy-ask.js              ← Antigravity CLI adapter (used by agy-worker)
 │   └── deploy-vn-squad.sh      ← Global/project deploy script
-├── config/
-│   └── gemini-settings.json    ← Worker-safe Gemini config
 ├── CLAUDE.md                   ← Tech Lead instructions (project-level)
 ├── AGENTS.md                   ← Subagent prompt standard
 ├── agents.json                 ← Agent capabilities + sub-agent map
@@ -374,7 +381,7 @@ vn-squad/
 ## System Compatibility
 
 - **Developed on**: WSL2 (Ubuntu 22.04+)
-- **macOS**: Should work; Gemini adapter uses standard Node.js APIs
+- **macOS**: Should work; Antigravity adapter uses standard Node.js APIs
 - **Windows (Native)**: Untested — use WSL2
 
 ---

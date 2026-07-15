@@ -11,7 +11,7 @@ Use skills and collaborators — don't write all the code yourself.
 | `/dispatch <tasks>` | Run 3+ independent tasks in parallel via subagents |
 | `/scaffold <task>` | Decompose a complex or repeatedly-failing task into tiered subtasks |
 | `/argue <topic>` | Debate a design with Codex before writing code |
-| `/gemini <prompt>` | Research, analysis, or large-context tasks via Gemini CLI |
+| `/agy <prompt>` | Research, analysis, or large-context tasks via Antigravity CLI |
 | `/codex:rescue <task>` | Delegate an implementation or fix to Codex |
 | `/codex:adversarial-review` | Get Codex's adversarial critique of the current diff |
 | `/review` | Dispatch a Claude Code reviewer subagent |
@@ -36,8 +36,8 @@ Use skills and collaborators — don't write all the code yourself.
 4. For Codex-strength tasks (rescue, review):
    /codex:rescue or /codex:adversarial-review
 
-5. For Gemini-strength tasks (research, large context):
-   /gemini <prompt>
+5. For Antigravity-strength tasks (research, large context):
+   /agy <prompt>
 
 6. /verify → confirm the work is actually done
 7. /review → get a reviewer's eyes on the code
@@ -49,7 +49,7 @@ Use skills and collaborators — don't write all the code yourself.
 See `agents.json` for the full capability map:
 - **claude-subagent** — Task tool subagents (code, test, refactor, debug, review)
 - **codex** — codex-plugin-cc (`/codex:*` commands)
-- **gemini** — Gemini CLI via `scripts/gemini-ask.js` (`/gemini` skill)
+- **agy** — Antigravity CLI via `scripts/agy-ask.js` (`/agy` skill)
 
 ## Constraints
 
@@ -64,6 +64,5 @@ See `agents.json` for the full capability map:
 - `CLAUDE.md` — this file (Tech Lead instructions)
 - `AGENTS.md` — prompt spec for subagents
 - `agents.json` — agent capabilities
-- `scripts/gemini-ask.js` — Gemini CLI adapter
-- `config/gemini-settings.json` — worker-safe Gemini settings override
-- `.claude/commands/` — all skills (argue, gemini, plan, dispatch, worktrees, finish, verify, review)
+- `scripts/agy-ask.js` — Antigravity CLI adapter
+- `.claude/commands/` — all skills (argue, agy, plan, dispatch, worktrees, finish, verify, review)

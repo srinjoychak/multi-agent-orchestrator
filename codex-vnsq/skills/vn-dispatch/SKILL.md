@@ -1,6 +1,6 @@
 ---
 name: vn-dispatch
-description: Dispatch independent tasks to specialized agents working in parallel using Codex, Claude, and Gemini worker scripts.
+description: Dispatch independent tasks to specialized agents working in parallel using Codex, Claude, and Antigravity worker scripts.
 ---
 
 # `vn-dispatch` — Parallel Agent Dispatch
@@ -21,7 +21,7 @@ Any agent can handle any task type. Routing is by explicit annotation.
 |---|---|---|
 | `[codex]` | `codex-vnsq/scripts/codex-ask.js` | e.g. `--model gpt-5.4-mini` |
 | `[claude]` | `codex-vnsq/scripts/claude-ask.js` | e.g. `--model sonnet` |
-| `[gemini]` | `codex-vnsq/scripts/gemini-ask.js` | `--model flash|pro|pro-exp` |
+| `[agy]` | `codex-vnsq/scripts/agy-ask.js` | `--model flash|pro` |
 
 Each annotated task should run in its own isolated git worktree. Use `vn-worktrees` first or let
 the dispatcher create the worktrees for you.
@@ -34,7 +34,7 @@ Run the dispatcher script with the annotated task block:
 node codex-vnsq/scripts/vn-dispatch.js --worktree-root .worktrees <<'EOF'
 [codex] create hello.js with console.log('hello')
 [claude] create hello.sh with echo 'hello'
-[gemini --model flash] summarize the README in one paragraph
+[agy --model flash] summarize the README in one paragraph
 EOF
 ```
 

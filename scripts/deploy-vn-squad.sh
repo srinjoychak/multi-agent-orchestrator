@@ -24,19 +24,18 @@ echo "      $(ls "$REPO/.claude/commands/"*.md | wc -l) skills installed"
 echo "[2/4] Installing agents to $GLOBAL_DIR/agents/ ..."
 mkdir -p "$GLOBAL_DIR/agents"
 cp "$REPO/.claude/agents/"*.md "$GLOBAL_DIR/agents/"
-# Patch gemini-worker path for global use: fallback to ~/.claude/scripts/
-sed -i 's|node /path/to/scripts/gemini-ask.js|node ~/.claude/scripts/gemini-ask.js|g' \
-    "$GLOBAL_DIR/agents/gemini-worker.md"
+# Patch agy-worker path for global use: fallback to ~/.claude/scripts/
+sed -i 's|node /path/to/scripts/agy-ask.js|node ~/.claude/scripts/agy-ask.js|g' \
+    "$GLOBAL_DIR/agents/agy-worker.md"
 # Also patch the git-root-relative instruction
-sed -i 's|git rev-parse --show-toplevel.*then append .*/scripts/gemini-ask.js.*|Use: ~/.claude/scripts/gemini-ask.js (global install) or <project>/scripts/gemini-ask.js if present.|g' \
-    "$GLOBAL_DIR/agents/gemini-worker.md"
+sed -i 's|git rev-parse --show-toplevel.*then append .*/scripts/agy-ask.js.*|Use: ~/.claude/scripts/agy-ask.js (global install) or <project>/scripts/agy-ask.js if present.|g' \
+    "$GLOBAL_DIR/agents/agy-worker.md"
 echo "      $(ls "$REPO/.claude/agents/"*.md | wc -l) agents installed"
 
-echo "[3/4] Installing Gemini adapter to $GLOBAL_DIR/scripts/ ..."
+echo "[3/4] Installing Antigravity adapter to $GLOBAL_DIR/scripts/ ..."
 mkdir -p "$GLOBAL_DIR/scripts"
-cp "$REPO/scripts/gemini-ask.js" "$GLOBAL_DIR/scripts/"
-cp "$REPO/config/gemini-settings.json" "$GLOBAL_DIR/scripts/"
-echo "      gemini-ask.js + gemini-settings.json installed"
+cp "$REPO/scripts/agy-ask.js" "$GLOBAL_DIR/scripts/"
+echo "      agy-ask.js installed"
 
 echo "[4/4] Writing global CLAUDE.md ..."
 cat > "$GLOBAL_DIR/CLAUDE.md" << 'CLAUDEEOF'
@@ -53,7 +52,7 @@ Use skills and collaborators — don't write all the code yourself.
 | `/dispatch <tasks>` | Run 3+ independent tasks in parallel via subagents |
 | `/scaffold <task>` | Decompose a complex or repeatedly-failing task into tiered subtasks |
 | `/argue <topic>` | Debate a design with Codex before writing code |
-| `/gemini <prompt>` | Research, analysis, or large-context tasks via Gemini CLI |
+| `/agy <prompt>` | Research, analysis, or large-context tasks via Antigravity CLI |
 | `/codex:rescue <task>` | Delegate an implementation or fix to Codex |
 | `/codex:adversarial-review` | Get Codex's adversarial critique of the current diff |
 | `/review` | Dispatch a Claude Code reviewer subagent |
@@ -76,7 +75,7 @@ Use skills and collaborators — don't write all the code yourself.
 ## Agents Available
 
 - **claude-subagent** — Task tool subagents (code, test, refactor, debug, review)
-- **gemini-worker** — Gemini CLI via ~/.claude/scripts/gemini-ask.js
+- **agy-worker** — Antigravity CLI via ~/.claude/scripts/agy-ask.js
 - **codex-worker** — Codex via codex-plugin-cc
 - **vn-reviewer** — Read-only structured code reviewer
 
@@ -87,10 +86,10 @@ Use skills and collaborators — don't write all the code yourself.
 - Sign PR reviews: — Claude Sonnet 4.6 (Tech Lead)
 - Read AGENTS.md in the project root for subagent prompt standards (if present)
 
-## Gemini Script Location
+## Antigravity Script Location
 
-Global install: ~/.claude/scripts/gemini-ask.js
-Project override: <project-root>/scripts/gemini-ask.js (takes precedence if present)
+Global install: ~/.claude/scripts/agy-ask.js
+Project override: <project-root>/scripts/agy-ask.js (takes precedence if present)
 CLAUDEEOF
 echo "      ~/.claude/CLAUDE.md written"
 
@@ -117,11 +116,9 @@ if [ -n "$1" ]; then
     mkdir -p "$TARGET/.claude/agents"
     cp "$REPO/.claude/agents/"*.md "$TARGET/.claude/agents/"
 
-    echo "[C] Copying Gemini adapter to $TARGET/scripts/ ..."
+    echo "[C] Copying Antigravity adapter to $TARGET/scripts/ ..."
     mkdir -p "$TARGET/scripts"
-    cp "$REPO/scripts/gemini-ask.js" "$TARGET/scripts/"
-    mkdir -p "$TARGET/config"
-    cp "$REPO/config/gemini-settings.json" "$TARGET/config/"
+    cp "$REPO/scripts/agy-ask.js" "$TARGET/scripts/"
 
     echo ""
     echo "Project deploy complete: $TARGET"
@@ -130,6 +127,6 @@ fi
 
 echo ""
 echo "Verify with:"
-echo "  node ~/.claude/scripts/gemini-ask.js 'what is 2+2'"
+echo "  node ~/.claude/scripts/agy-ask.js 'what is 2+2'"
 echo "  ls ~/.claude/commands/"
 echo "  ls ~/.claude/agents/"

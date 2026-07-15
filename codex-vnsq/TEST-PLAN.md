@@ -12,7 +12,14 @@ Verify each adapter script can invoke its target CLI and return structured JSON.
 |---|---|
 | `node codex-vnsq/scripts/codex-ask.js "what is 2+2"` | JSON output with `summary: "4"` or equivalent, `exitCode: 0`. |
 | `node codex-vnsq/scripts/claude-ask.js "what is 2+2"` | JSON output with `summary: "4"` or equivalent, `exitCode: 0`. |
-| `node codex-vnsq/scripts/gemini-ask.js "what is 2+2"` | JSON output with `summary: "4"` or equivalent, `exitCode: 0`. |
+| `node codex-vnsq/scripts/agy-ask.js "what is 2+2"` | JSON output with `summary: "4"` or equivalent, `exitCode: 0`. |
+
+### 1a. Regression checks: agy silent-failure modes
+
+`agy` returns `exitCode: 0` even when `--model` is silently ignored or file writes land in the
+wrong place — see `agy-vnsq/TEST-PLAN.md` section 1a for the exact commands to verify `--model
+pro` actually switches models and files land in the real `--work-dir`, not agy's internal scratch
+directory.
 
 ---
 
@@ -26,7 +33,7 @@ Verify skills are correctly installed and recognized by Codex.
    - `vn-dispatch`
    - `vn-scaffold`
    - `vn-argue`
-   - `vn-gemini`
+   - `vn-agy`
    - `vn-claude`
    - `vn-worktrees`
    - `vn-finish`
@@ -66,7 +73,7 @@ Perform a controlled mini-task to verify the Tech Lead loop.
 vn-dispatch
   [codex] create hello.js with console.log('hello')
   [claude] create hello.sh with echo 'hello'
-  [gemini --model flash] summarize the task in one sentence
+  [agy --model flash] summarize the task in one sentence
 ```
 
 **Verification:**
@@ -96,8 +103,8 @@ vn-dispatch
 
 1. **Invalid command**: verify `vn-dispatch` handles a failing agent gracefully.
 2. **Conflicting tasks**: dispatch two agents to modify the same file and verify conflict handling.
-3. **Missing CLI**: temporarily remove `claude` or `gemini` from `PATH` and confirm adapters fail with a clear error.
-4. **Dispatcher routing**: verify `vn-dispatch` routes `[claude]` and `[gemini]` annotations to the matching worker adapters.
+3. **Missing CLI**: temporarily remove `claude` or `agy` from `PATH` and confirm adapters fail with a clear error.
+4. **Dispatcher routing**: verify `vn-dispatch` routes `[claude]` and `[agy]` annotations to the matching worker adapters.
 
 ---
 

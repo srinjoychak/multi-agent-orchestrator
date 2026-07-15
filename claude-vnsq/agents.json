@@ -7,11 +7,11 @@
     "isolation": "none by default — runs in main worktree",
     "capabilities": ["code", "refactor", "test", "debug", "review", "research", "docs", "analysis"]
   },
-  "gemini-worker": {
-    "description": "Gemini CLI via gemini-worker subagent (.claude/agents/gemini-worker.md)",
-    "subagent_definition": ".claude/agents/gemini-worker.md",
-    "dispatch_annotation": "[gemini]",
-    "model_selection": "[gemini --model flash|pro|pro-exp] — passed to scripts/gemini-ask.js",
+  "agy-worker": {
+    "description": "Antigravity CLI via agy-worker subagent (.claude/agents/agy-worker.md)",
+    "subagent_definition": ".claude/agents/agy-worker.md",
+    "dispatch_annotation": "[agy]",
+    "model_selection": "[agy --model flash|pro] — passed to scripts/agy-ask.js",
     "isolation": "worktree per task (isolation: worktree in agent definition)",
     "wrapper_model": "haiku (lightweight wrapper — cost-effective)",
     "capabilities": ["code", "refactor", "test", "debug", "review", "research", "docs", "analysis", "large-context"]
